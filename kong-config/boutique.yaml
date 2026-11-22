@@ -248,6 +248,7 @@ services:
             config:
               issuer: ${{ env "DECK_OIDC_ISSUER" }}
               auth_methods: [bearer]           # only verify tokens; partners get them from Cognito
+              ssl_verify: true                 # verify Cognito HTTPS cert (Kong 3.14 refuses ssl_verify off)
               bearer_token_param_type: [header]
               scopes_claim: [scope]
               scopes_required: ["boutique/partner.read"]
