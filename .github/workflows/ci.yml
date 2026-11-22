@@ -43,9 +43,11 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
 
       - name: Build and push
         run: |
+          REGISTRY="${{ steps.ecr.outputs.registry }}"   # <account>.dkr.ecr.<region>.amazonaws.com, from the ECR login
           if [ "${{ matrix.service }}" = "frontend" ]; then
             CONTEXT=projects/boutique-microservices/frontend
             ARGS="--build-arg REACT_APP_API_URL=/api"     # browser calls /api on the Kong address
@@ -70,7 +72,13 @@ jobs:
       - name: Set new image tags in overlays/dev
         run: |
           F=k8s-kong/overlays/dev/kustomization.yaml
-          sed -i -E "s|(newName: ).*/boutique/|\1$REGISTRY/boutique/|; s|(newTag: ).*|\1\"$TAG\"|" "$F"
+          if [[ "$REGISTRY" =~ ^[0-9]{12}\.dkr\.ecr\. ]]; then
+            sed -i -E "s|(newName: ).*/boutique/|\1$REGISTRY/boutique/|" "$F"
+          else
+            echo "vars.AWS_ACCOUNT_ID not set: keeping the image names already in $F, updating tags only"
+          fi
+          sed -i -E "s|(newTag: ).*|\1\"$TAG\"|" "$F"
+          grep -q 'newName: [0-9]\{12\}\.dkr\.ecr\.' "$F" || { echo "ERROR: image names in $F have no AWS account ID" >&2; exit 1; }
           git diff "$F"
 
       - name: Commit
