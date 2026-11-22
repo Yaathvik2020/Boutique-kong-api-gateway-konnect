@@ -109,6 +109,10 @@ resource "helm_release" "external_secrets" {
       annotations = { "eks.amazonaws.com/role-arn" = aws_iam_role.external_secrets.arn }
     }
   })]
+
+  # The Load Balancer Controller adds a webhook that checks every new Service; install it
+  # first (Helm waits for its pods), or other charts fail with "no endpoints available".
+  depends_on = [helm_release.aws_lb_controller]
 }
 
 # ---------------- Cluster autoscaler ----------------
@@ -167,6 +171,10 @@ resource "helm_release" "cluster_autoscaler" {
     },
     var.cluster_autoscaler_image_tag == "" ? {} : { image = { tag = var.cluster_autoscaler_image_tag } }
   ))]
+
+  # The Load Balancer Controller adds a webhook that checks every new Service; install it
+  # first (Helm waits for its pods), or other charts fail with "no endpoints available".
+  depends_on = [helm_release.aws_lb_controller]
 }
 
 # ---------------- Metrics server ----------------
@@ -177,6 +185,10 @@ resource "helm_release" "metrics_server" {
   chart      = var.local_chart_dir == "" ? "metrics-server" : "${var.local_chart_dir}/metrics-server-${local.v.metrics_server}.tgz"
   version    = local.v.metrics_server
   values     = [yamlencode({ replicas = var.ha ? 2 : 1 })]
+
+  # The Load Balancer Controller adds a webhook that checks every new Service; install it
+  # first (Helm waits for its pods), or other charts fail with "no endpoints available".
+  depends_on = [helm_release.aws_lb_controller]
 }
 
 # ---------------- Monitoring ----------------
@@ -212,6 +224,10 @@ resource "helm_release" "monitoring" {
       persistence = { enabled = true, storageClassName = kubernetes_storage_class_v1.gp3.metadata[0].name, size = "10Gi" }
     }
   })]
+
+  # The Load Balancer Controller adds a webhook that checks every new Service; install it
+  # first (Helm waits for its pods), or other charts fail with "no endpoints available".
+  depends_on = [helm_release.aws_lb_controller]
 }
 
 # ---------------- Argo CD ----------------
@@ -236,7 +252,7 @@ resource "helm_release" "argocd" {
     controller     = { replicas = 1 }
   })]
 
-  depends_on = [helm_release.monitoring] # ServiceMonitor CRDs exist before apps use them
+  depends_on = [helm_release.monitoring, helm_release.aws_lb_controller] # CRDs first; LB controller webhook ready
 }
 
 # ---------------- AWS Load Balancer Controller ----------------
@@ -273,6 +289,7 @@ resource "helm_release" "aws_lb_controller" {
     }
   })]
 
+  wait       = true # Terraform waits until the controller's pods (and its webhook) are ready
   depends_on = [aws_iam_role_policy_attachment.aws_lb_controller]
 }
 
@@ -318,6 +335,10 @@ resource "helm_release" "external_dns" {
       annotations = { "eks.amazonaws.com/role-arn" = aws_iam_role.external_dns.arn }
     }
   })]
+
+  # The Load Balancer Controller adds a webhook that checks every new Service; install it
+  # first (Helm waits for its pods), or other charts fail with "no endpoints available".
+  depends_on = [helm_release.aws_lb_controller]
 }
 
 # ---------------- Kong data planes: read the Redis password from Secrets Manager ----------------
