@@ -17,7 +17,7 @@ spec:
           - $values/k8s-kong/kong-dp/values.yaml
           - $values/k8s-kong/kong-dp/values-prod.yaml
     - repoURL: https://github.com/Yaathvik2020/Boutique-kong-api-gateway-konnect.git   # create this GitHub repo (or change to yours)
-      targetRevision: main
+      targetRevision: main        # prod environment = main branch
       ref: values
   destination:
     server: https://kubernetes.default.svc

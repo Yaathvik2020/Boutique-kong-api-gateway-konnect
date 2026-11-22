@@ -9,7 +9,7 @@ spec:
   project: default
   source:
     repoURL: https://github.com/Yaathvik2020/Boutique-kong-api-gateway-konnect.git   # create this GitHub repo (or change to yours)
-    targetRevision: main
+    targetRevision: developer   # dev environment = developer branch
     path: k8s-kong/overlays/dev
   destination:
     server: https://kubernetes.default.svc

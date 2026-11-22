@@ -1,8 +1,10 @@
 # Gateway config (decK -> Konnect), one Konnect control plane per environment:
 #   dev, staging, prod   (same names as the environments)
 #
-#   Pull request touching kong-config/ -> validate + diff for all 3, diff posted on the PR
-#   Merge to main                      -> dev (automatic) -> staging (approval) -> prod (approval)
+#   Branch = environment:  developer -> dev,  staging -> staging,  main -> prod
+#   Pull request touching kong-config/ -> validate + diff for the PR's TARGET branch's environment
+#   Push/merge to a branch             -> sync that branch's environment (staging/prod wait for approval
+#                                         if the GitHub environment has required reviewers)
 #   Each sync: backup, sync, smoke test, restore backup if the smoke test fails
 #
 # GitHub setup:
@@ -17,7 +19,7 @@ on:
   pull_request:
     paths: ["kong-config/**"]
   push:
-    branches: [main]
+    branches: [developer, staging, main]   # one branch per environment
     paths: ["kong-config/**"]
   workflow_dispatch:
 
@@ -37,11 +39,8 @@ jobs:
   diff:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        cp: [dev, staging, prod]
-    continue-on-error: ${{ matrix.cp != 'dev' }}   # staging/prod may not be built yet
+    env:
+      CP: ${{ github.base_ref == 'main' && 'prod' || (github.base_ref == 'staging' && 'staging' || 'dev') }}
     steps:
       - uses: actions/checkout@v7
       - uses: kong/setup-deck@v1
@@ -51,29 +50,18 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_DECK_ROLE_ARN }}
           aws-region: us-east-1
-      - run: kong-config/deck.sh ${{ matrix.cp }} validate
-      - run: kong-config/deck.sh ${{ matrix.cp }} diff | tee diff.txt
+      - run: kong-config/deck.sh "$CP" validate
+      - run: kong-config/deck.sh "$CP" diff | tee diff.txt
       - uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
-            const body = '### decK diff: `${{ matrix.cp }}`\n```\n' + fs.readFileSync('diff.txt', 'utf8').slice(0, 60000) + '\n```';
+            const body = '### decK diff: `' + process.env.CP + '`\n```\n' + fs.readFileSync('diff.txt', 'utf8').slice(0, 60000) + '\n```';
             await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
 
-  dev:
+  sync:
     if: github.event_name != 'pull_request'
     uses: ./.github/workflows/kong-config-sync.yml
-    with: { environment: dev }
-    secrets: inherit
-
-  staging:
-    needs: dev
-    uses: ./.github/workflows/kong-config-sync.yml
-    with: { environment: staging }
-    secrets: inherit
-
-  prod:
-    needs: staging
-    uses: ./.github/workflows/kong-config-sync.yml
-    with: { environment: prod }
+    with:
+      environment: ${{ github.ref_name == 'main' && 'prod' || (github.ref_name == 'staging' && 'staging' || 'dev') }}
     secrets: inherit

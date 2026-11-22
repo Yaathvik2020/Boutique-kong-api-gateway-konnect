@@ -1,8 +1,16 @@
-# Promote: copy the image tags that are running in one environment to the next one,
-# as a pull request. Merging the PR = the release (Argo CD deploys it).
-#   dev     -> staging
-#   staging -> prod
-# Nothing is rebuilt: prod runs exactly the images that were tested in staging.
+# Promote = release to the next environment, as a pull request between environment branches:
+#
+#   developer ──PR──► staging ──PR──► main
+#   (dev env)        (staging env)    (prod env)
+#
+#   target=staging : branch from `staging`, merge `developer` into it, copy dev's image tags
+#                    into overlays/staging  -> PR into `staging`
+#   target=prod    : branch from `main`, merge `staging` into it, copy staging's image tags
+#                    into overlays/prod     -> PR into `main`
+#
+# Merging the PR is the release: Argo CD on that cluster deploys it. Nothing is rebuilt:
+# prod runs exactly the images tested in staging. Each overlay's image tags only change on
+# its own branch line, so these merges don't conflict.
 name: promote
 
 on:
@@ -21,30 +29,48 @@ jobs:
   promote:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-
-      - name: Copy images block
+      - name: Work out branches
         run: |
-          TARGET=${{ inputs.target }}
-          SOURCE=$([ "$TARGET" = "prod" ] && echo staging || echo dev)
-          echo "SOURCE=$SOURCE" >> "$GITHUB_ENV"
-          python3 scripts/promote-images.py \
-            k8s-kong/overlays/$SOURCE/kustomization.yaml \
-            k8s-kong/overlays/$TARGET/kustomization.yaml
+          if [ "${{ inputs.target }}" = "prod" ]; then
+            echo "SRC_BRANCH=staging" >> "$GITHUB_ENV"; echo "SRC_ENV=staging" >> "$GITHUB_ENV"
+            echo "DST_BRANCH=main"    >> "$GITHUB_ENV"; echo "DST_ENV=prod"    >> "$GITHUB_ENV"
+          else
+            echo "SRC_BRANCH=developer" >> "$GITHUB_ENV"; echo "SRC_ENV=dev"   >> "$GITHUB_ENV"
+            echo "DST_BRANCH=staging"   >> "$GITHUB_ENV"; echo "DST_ENV=staging" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.DST_BRANCH }}
+          fetch-depth: 0
+
+      - name: Merge ${{ env.SRC_BRANCH }} and copy its image tags
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git merge --no-edit "origin/$SRC_BRANCH" \
+            -m "release($DST_ENV): merge $SRC_BRANCH into $DST_BRANCH" \
+            || { echo "Merge conflict between $SRC_BRANCH and $DST_BRANCH: resolve it in a manual PR"; exit 1; }
+          git show "origin/$SRC_BRANCH:k8s-kong/overlays/$SRC_ENV/kustomization.yaml" > /tmp/src-kustomization.yaml
+          python3 scripts/promote-images.py /tmp/src-kustomization.yaml "k8s-kong/overlays/$DST_ENV/kustomization.yaml"
           git diff
 
       - name: Open pull request
         uses: peter-evans/create-pull-request@v8
         with:
+          base: ${{ env.DST_BRANCH }}
           branch: promote/${{ inputs.target }}
-          title: "release(${{ inputs.target }}): promote images from ${{ env.SOURCE }}"
-          commit-message: "release(${{ inputs.target }}): promote images from ${{ env.SOURCE }}"
+          title: "release(${{ env.DST_ENV }}): ${{ env.SRC_BRANCH }} -> ${{ env.DST_BRANCH }}"
+          commit-message: "release(${{ env.DST_ENV }}): image tags from ${{ env.SRC_ENV }}"
           body: |
-            Copies the image tags running in **${{ env.SOURCE }}** to **${{ inputs.target }}**.
-            Merging deploys them through Argo CD on the ${{ inputs.target }} cluster.
+            Release **${{ env.SRC_BRANCH }} → ${{ env.DST_BRANCH }}** (${{ env.DST_ENV }} environment):
+            - all code and config changes from `${{ env.SRC_BRANCH }}`
+            - the image tags running in **${{ env.SRC_ENV }}**, copied into `k8s-kong/overlays/${{ env.DST_ENV }}`
+
+            Merging deploys it: Argo CD on the ${{ env.DST_ENV }} cluster, and the Kong config sync for ${{ env.DST_ENV }}.
 
             Checklist:
-            - [ ] ${{ env.SOURCE }} smoke tests passed
+            - [ ] ${{ env.SRC_ENV }} tests passed
             - [ ] No open incidents
             - [ ] Change approval recorded (prod)
           labels: release

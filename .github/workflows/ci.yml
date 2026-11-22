@@ -1,5 +1,5 @@
 # Build -> dev.
-#   Push to main (app code changed) or manual run:
+#   Push to developer (app code changed) or manual run:
 #   1. build each service image ONCE, tag = git commit SHA, push to ECR (boutique/<service>)
 #   2. set that tag in k8s-kong/overlays/dev and commit -> Argo CD on the dev cluster deploys it
 # staging and prod get the SAME images later through promote.yml (a reviewed PR).
@@ -10,12 +10,12 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [developer]   # the deploy branch
     paths: ["projects/boutique-microservices/**"]
   workflow_dispatch:
 
 concurrency:
-  group: ci-main
+  group: ci-developer
   cancel-in-progress: false
 
 permissions:
@@ -65,6 +65,8 @@ jobs:
 
   deploy-dev:
     needs: build
+    # Only the deploy branch (developer) deploys: a run from another branch builds images but doesn't touch the dev tag
+    if: github.ref == 'refs/heads/developer'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -88,5 +90,5 @@ jobs:
           git add k8s-kong/overlays/dev/kustomization.yaml
           git diff --staged --quiet && { echo "No changes"; exit 0; }
           git commit -m "deploy(dev): images ${TAG::7}"
-          for i in 1 2 3; do git pull --rebase origin main && git push && exit 0; sleep 5; done
+          for i in 1 2 3; do git pull --rebase origin developer && git push origin HEAD:developer && exit 0; sleep 5; done
           exit 1

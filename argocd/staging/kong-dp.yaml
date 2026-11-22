@@ -17,7 +17,7 @@ spec:
           - $values/k8s-kong/kong-dp/values.yaml
           - $values/k8s-kong/kong-dp/values-staging.yaml
     - repoURL: https://github.com/Yaathvik2020/Boutique-kong-api-gateway-konnect.git   # create this GitHub repo (or change to yours)
-      targetRevision: main
+      targetRevision: staging     # staging environment = staging branch
       ref: values
   destination:
     server: https://kubernetes.default.svc
