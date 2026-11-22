@@ -232,7 +232,80 @@ services:
                 ssl_verify: true
                 server_name: ${{ env "DECK_REDIS_HOST" }}
                 password: '{vault://aws-sm/${{ env "DECK_REDIS_SECRET" }}/password}'
+
+      # ---- Partner API v2: OAuth2 tokens instead of API keys ----
+      # Partner gets a token from Cognito (client_credentials, scope boutique/partner.read), then:
+      #   curl -H "Authorization: Bearer <access token>" https://<api-host>/partner/v2/products
+      # Kong checks signature + expiry + scope against Cognito's public keys (JWKS) and maps the
+      # token's client_id to the Kong consumer (custom_id), so ACL + per-partner limits apply.
+      - name: partner-products-v2
+        paths: ["/partner/v2/products"]
+        protocols: [https]
+        https_redirect_status_code: 426
+        strip_path: true
+        plugins:
+          - name: openid-connect
+            config:
+              issuer: ${{ env "DECK_OIDC_ISSUER" }}
+              auth_methods: [bearer]           # only verify tokens; partners get them from Cognito
+              bearer_token_param_type: [header]
+              scopes_claim: [scope]
+              scopes_required: ["boutique/partner.read"]
+              consumer_claim: [client_id]      # Cognito puts the app client ID in "client_id"
+              consumer_by: [custom_id]         # ... which is the Kong consumer's custom_id
+              consumer_optional: false         # unknown client -> 403
+              upstream_headers_claims: [client_id]
+              upstream_headers_names: [X-Partner-Client-Id]
+              hide_credentials: true           # the backend never sees the token
+              cache_tokens_salt: ${{ env "DECK_OIDC_CACHE_SALT" }}   # fixed per env, so syncs don't reset the token cache
+              # Discovery document + Cognito signing keys, shared by all Kong pods in Redis
+              cluster_cache_strategy: redis
+              cluster_cache_redis:
+                host: ${{ env "DECK_REDIS_HOST" }}
+                port: 6379
+                ssl: true
+                ssl_verify: true
+                server_name: ${{ env "DECK_REDIS_HOST" }}
+                password: '{vault://aws-sm/${{ env "DECK_REDIS_SECRET" }}/password}'
+          - name: acl
+            config:
+              allow: [partners]
+              hide_groups_header: true
+          - name: rate-limiting-advanced
+            config:
+              limit: [1000]
+              window_size: [60]
+              window_type: sliding
+              identifier: consumer             # per partner, same budget idea as the API-key route
+              strategy: redis
+              sync_rate: 0.5
+              namespace: boutique-partner-v2-products
+              hide_client_headers: false
+              redis:
+                host: ${{ env "DECK_REDIS_HOST" }}
+                port: 6379
+                ssl: true
+                ssl_verify: true
+                server_name: ${{ env "DECK_REDIS_HOST" }}
+                password: '{vault://aws-sm/${{ env "DECK_REDIS_SECRET" }}/password}'
     plugins:
+      # Response cache: GET /api/products and the partner routes are answered from Redis for 30 s.
+      # Header X-Cache-Status: Miss (fetched from product-service) / Hit (from Redis) / Bypass.
+      - name: proxy-cache-advanced
+        config:
+          strategy: redis
+          cache_ttl: 30
+          request_method: [GET, HEAD]
+          response_code: [200]
+          content_type: ["application/json", "application/json; charset=utf-8"]
+          cache_control: false          # cache even if the service doesn't send Cache-Control
+          redis:
+            host: ${{ env "DECK_REDIS_HOST" }}
+            port: 6379
+            ssl: true
+            ssl_verify: true
+            server_name: ${{ env "DECK_REDIS_HOST" }}
+            password: '{vault://aws-sm/${{ env "DECK_REDIS_SECRET" }}/password}'
       - name: rate-limiting-advanced
         config:
           limit: [300]                 # 300 requests ...
@@ -348,11 +421,13 @@ services:
 # ---------------------------------------------------------------- consumers (partners)
 # One consumer per partner. The API key comes from AWS Secrets Manager
 # (boutique/<env>/partner-api-keys, JSON {"acme": "<key>"}); deck.sh reads it into
-# DECK_PARTNER_ACME_KEY. Add a partner: add a consumer here + a key in that secret
-# + an export line in deck.sh.
+# DECK_PARTNER_ACME_KEY. For the OAuth2 route (/partner/v2) the consumer is found by its
+# custom_id = the partner's Cognito app client ID (terraform output partner_acme_client_id,
+# in kong-config/envs/<env>.env). Add a partner: add a consumer here + a key in that secret
+# + an export line in deck.sh + the partner name in terraform module partner_auth.
 consumers:
   - username: partner-acme
-    custom_id: acme-insurance-broker
+    custom_id: ${{ env "DECK_PARTNER_ACME_CLIENT_ID" }}   # Cognito app client ID (OAuth2 route); API key route uses keyauth_credentials
     tags: [partner]
     keyauth_credentials:
       - key: ${{ env "DECK_PARTNER_ACME_KEY" }}

@@ -49,9 +49,13 @@ if [[ "$ACTION" != "ping" && -z "${DECK_PARTNER_ACME_KEY:-}" ]]; then
   export DECK_PARTNER_ACME_KEY
 fi
 
-if [[ "$ACTION" != "ping" && "${DECK_REDIS_HOST:-}" == *"<"* ]]; then
-  echo "Set DECK_REDIS_HOST in $ENV_FILE (terraform -chdir=terraform-infra/envs/$CP output -raw redis_host)" >&2
-  exit 1
+if [[ "$ACTION" != "ping" ]]; then
+  for v in DECK_REDIS_HOST DECK_OIDC_ISSUER DECK_PARTNER_ACME_CLIENT_ID; do
+    if [[ -z "${!v:-}" || "${!v}" == *"<"* ]]; then
+      echo "Set $v in $ENV_FILE (values from: terraform -chdir=terraform-infra/envs/$CP output)" >&2
+      exit 1
+    fi
+  done
 fi
 
 CONN=(--konnect-addr "${KONNECT_ADDR:-https://in.api.konghq.com}"
