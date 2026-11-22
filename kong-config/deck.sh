@@ -49,6 +49,19 @@ if [[ "$ACTION" != "ping" && -z "${DECK_PARTNER_ACME_KEY:-}" ]]; then
   export DECK_PARTNER_ACME_KEY
 fi
 
+# Partner ACME's JWT public key (PEM) from Secrets Manager: boutique/<env>/partner-acme-jwt-public-key.
+# Newlines become "\n" so the key fits in a quoted YAML string in boutique.yaml.
+if [[ "$ACTION" != "ping" && -z "${DECK_PARTNER_ACME_JWT_PUBLIC_KEY:-}" ]]; then
+  PUB_SECRET="boutique/$CP/partner-acme-jwt-public-key"
+  if ! PUB_PEM="$(aws secretsmanager get-secret-value --region "${AWS_REGION:-us-east-1}" \
+        --secret-id "$PUB_SECRET" --query SecretString --output text 2>/dev/null)"; then
+    echo "Partner JWT public key not found in Secrets Manager ($PUB_SECRET). See the runbook (partner JWT key pair)." >&2
+    exit 1
+  fi
+  DECK_PARTNER_ACME_JWT_PUBLIC_KEY="$(printf '%s\n' "$PUB_PEM" | awk 'NF {printf "%s\\n", $0}')"
+  export DECK_PARTNER_ACME_JWT_PUBLIC_KEY
+fi
+
 if [[ "$ACTION" != "ping" ]]; then
   for v in DECK_REDIS_HOST DECK_OIDC_ISSUER DECK_PARTNER_ACME_CLIENT_ID; do
     if [[ -z "${!v:-}" || "${!v}" == *"<"* ]]; then

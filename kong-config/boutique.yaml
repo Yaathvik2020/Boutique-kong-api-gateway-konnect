@@ -248,7 +248,7 @@ services:
             config:
               issuer: ${{ env "DECK_OIDC_ISSUER" }}
               auth_methods: [bearer]           # only verify tokens; partners get them from Cognito
-              ssl_verify: true                 # verify Cognito HTTPS cert (Kong 3.14 refuses ssl_verify off)
+              ssl_verify: true                 # verify Cognito's HTTPS certificate (Kong 3.14 refuses ssl_verify off)
               bearer_token_param_type: [header]
               scopes_claim: [scope]
               scopes_required: ["boutique/partner.read"]
@@ -281,6 +281,47 @@ services:
               strategy: redis
               sync_rate: 0.5
               namespace: boutique-partner-v2-products
+              hide_client_headers: false
+              redis:
+                host: ${{ env "DECK_REDIS_HOST" }}
+                port: 6379
+                ssl: true
+                ssl_verify: true
+                server_name: ${{ env "DECK_REDIS_HOST" }}
+                password: '{vault://aws-sm/${{ env "DECK_REDIS_SECRET" }}/password}'
+
+      # ---- Partner API v3: partner-signed JWT (Kong "jwt" plugin) ----
+      # The partner signs its own short-lived token with ITS private key (RS256); Kong holds only
+      # the partner's PUBLIC key (consumer jwt_secrets below). Claims Kong checks:
+      #   iss = partner-acme-jwt (selects the key -> consumer partner-acme), exp (max 1 h ahead)
+      #   curl -H "Authorization: Bearer <jwt>" https://<api-host>/partner/v3/products
+      - name: partner-products-v3
+        paths: ["/partner/v3/products"]
+        protocols: [https]
+        https_redirect_status_code: 426
+        strip_path: true
+        plugins:
+          - name: jwt
+            config:
+              key_claim_name: iss              # the "iss" claim picks the consumer's key
+              claims_to_verify: [exp]          # reject expired tokens
+              maximum_expiration: 3600         # and tokens valid for more than 1 hour
+              header_names: [authorization]
+              uri_param_names: []              # never accept tokens in the URL (they end up in logs)
+              cookie_names: []
+          - name: acl
+            config:
+              allow: [partners]
+              hide_groups_header: true
+          - name: rate-limiting-advanced
+            config:
+              limit: [1000]
+              window_size: [60]
+              window_type: sliding
+              identifier: consumer
+              strategy: redis
+              sync_rate: 0.5
+              namespace: boutique-partner-v3-products
               hide_client_headers: false
               redis:
                 host: ${{ env "DECK_REDIS_HOST" }}
@@ -432,5 +473,10 @@ consumers:
     tags: [partner]
     keyauth_credentials:
       - key: ${{ env "DECK_PARTNER_ACME_KEY" }}
+    jwt_secrets:                        # partner-signed JWT route (/partner/v3): partner's PUBLIC key only
+      - key: partner-acme-jwt           # = the "iss" claim the partner puts in its tokens
+        algorithm: RS256
+        secret: rs256-not-used          # decK requires the field; RS256 verifies with the public key only
+        rsa_public_key: "${{ env "DECK_PARTNER_ACME_JWT_PUBLIC_KEY" }}"   # from Secrets Manager via deck.sh
     acls:
       - group: partners

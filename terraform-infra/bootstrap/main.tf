@@ -68,7 +68,8 @@ data "aws_iam_policy_document" "github_trust" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      # GitHub sends either repo:<owner>/<repo>:... or repo:<owner>@<id>/<repo>@<id>:...
+      # GitHub sends either the classic form  repo:<owner>/<repo>:...
+      # or the newer form with immutable IDs  repo:<owner>@<owner-id>/<repo>@<repo-id>:...
       values = [
         "repo:${var.github_repo}:*",
         "repo:${split("/", var.github_repo)[0]}@*/${split("/", var.github_repo)[1]}@*:*",
@@ -132,6 +133,7 @@ resource "aws_iam_role_policy" "deck_secrets" {
       Resource = [
         "arn:aws:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:boutique/konnect-deck-token-*",
         "arn:aws:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:boutique/*/partner-api-keys-*",
+        "arn:aws:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:boutique/*/partner-*-jwt-public-key-*",
       ]
     }]
   })
