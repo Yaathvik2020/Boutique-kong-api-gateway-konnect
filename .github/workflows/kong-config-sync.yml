@@ -49,6 +49,6 @@ jobs:
           done
           if [ "$ok" != "1" ]; then
             echo "Smoke test failed: restoring the previous config"
-            deck gateway sync --konnect-addr "$KONNECT_ADDR" --konnect-control-plane-name "$CP" backup.yaml
+            kong-config/deck.sh "$CP" restore backup.yaml     # same token handling as the sync
             exit 1
           fi

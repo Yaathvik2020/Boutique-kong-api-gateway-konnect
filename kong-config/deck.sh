@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Apply kong-config/boutique.yaml to a Konnect control plane with decK.
-#   kong-config/deck.sh <control-plane-name> <ping|validate|diff|sync|dump>
+#   kong-config/deck.sh <control-plane-name> <ping|validate|diff|sync|dump|restore>
 #   kong-config/deck.sh dev diff
 #
 # Control plane names = environment names (dev, staging, prod); values come from envs/<env>.env
@@ -62,9 +62,12 @@ case "$ACTION" in
   validate) deck gateway validate "${CONN[@]}" "$DIR/boutique.yaml" ;;
   diff)     deck gateway diff     "${CONN[@]}" "$DIR/boutique.yaml" ;;
   sync)     deck gateway sync     "${CONN[@]}" "$DIR/boutique.yaml" ;;
+  restore)   # put a dump (from "dump") back, e.g. after a failed smoke test
+    file="${3:?usage: deck.sh <cp> restore <backup.yaml>}"
+    deck gateway sync "${CONN[@]}" "$file" ;;
   dump)
     out="${3:-backup-$CP-$(date +%Y%m%d-%H%M%S).yaml}"
     deck gateway dump "${CONN[@]}" -o "$out" --yes
     echo "Backup written: $out" ;;
-  *) echo "Unknown action: $ACTION (ping|validate|diff|sync|dump)" >&2; exit 1 ;;
+  *) echo "Unknown action: $ACTION (ping|validate|diff|sync|dump|restore)" >&2; exit 1 ;;
 esac
