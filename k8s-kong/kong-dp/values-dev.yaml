@@ -20,8 +20,8 @@ proxy:
     hostname: api-dev.ksysglobaltech.online                                     # output api_url (Route 53 record via external-dns)
     annotations:
       alb.ingress.kubernetes.io/load-balancer-name: boutique-dev-edge
-      alb.ingress.kubernetes.io/certificate-arn: "<acm_certificate_arn>"   # TODO output acm_certificate_arn
-      alb.ingress.kubernetes.io/wafv2-acl-arn: "<waf_acl_arn>"             # TODO output waf_acl_arn
+      alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:us-east-1:214920156606:certificate/b5fcc123-4df2-448b-85b3-60734edcfa43"
+      alb.ingress.kubernetes.io/wafv2-acl-arn: "arn:aws:wafv2:us-east-1:214920156606:regional/webacl/boutique-dev-api/37a377b4-ea99-4ed5-b789-3759ed9ed5da"
       alb.ingress.kubernetes.io/load-balancer-attributes: >-
         deletion_protection.enabled=false,access_logs.s3.enabled=true,access_logs.s3.bucket=boutique-dev-alb-logs-214920156606,idle_timeout.timeout_seconds=60,routing.http.drop_invalid_header_fields.enabled=true
 
