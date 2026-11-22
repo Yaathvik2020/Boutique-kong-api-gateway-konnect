@@ -4,10 +4,10 @@ image:
   tag: "3.14.0.12"   # Kong Gateway 3.14 LTS (supported to 2029). If Konnect shows a newer 3.14.x patch, use that.
 
 env:
-  cluster_control_plane: "31480c9310.in.cp.konghq.com:443"        # from Konnect "dev"
-  cluster_server_name: "31480c9310.in.cp.konghq.com"
-  cluster_telemetry_endpoint: "31480c9310.in.tp.konghq.com:443"
-  cluster_telemetry_server_name: "31480c9310.in.tp.konghq.com"
+  cluster_control_plane: "4db6049699.in.cp.konghq.com:443"
+  cluster_server_name: "4db6049699.in.cp.konghq.com"
+  cluster_telemetry_endpoint: "4db6049699.in.tp.konghq.com:443"
+  cluster_telemetry_server_name: "4db6049699.in.tp.konghq.com"
   trusted_ips: "10.10.0.0/16"                                  # output vpc_cidr (the ALB lives in this VPC)
 
 deployment:
