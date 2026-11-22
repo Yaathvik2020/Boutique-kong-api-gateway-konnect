@@ -17,7 +17,7 @@ deployment:
 
 proxy:
   ingress:
-    hostname: api-dev.ksysglobaltech.online                                     # output api_url (Route 53 record via external-dns)
+    hostname: ksys-dev.ksysglobaltech.online                                     # output api_url (Route 53 record via external-dns)
     annotations:
       alb.ingress.kubernetes.io/load-balancer-name: boutique-dev-edge
       alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:us-east-1:214920156606:certificate/b5fcc123-4df2-448b-85b3-60734edcfa43"
