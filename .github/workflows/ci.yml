@@ -1,0 +1,84 @@
+# Build -> dev.
+#   Push to main (app code changed) or manual run:
+#   1. build each service image ONCE, tag = git commit SHA, push to ECR (boutique/<service>)
+#   2. set that tag in k8s-kong/overlays/dev and commit -> Argo CD on the dev cluster deploys it
+# staging and prod get the SAME images later through promote.yml (a reviewed PR).
+#
+# GitHub setup: secret AWS_CI_ROLE_ARN (terraform-infra/bootstrap output github_ci_role_arn),
+#               variables AWS_ACCOUNT_ID, AWS_REGION (us-east-1).
+name: ci
+
+on:
+  push:
+    branches: [main]
+    paths: ["projects/boutique-microservices/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-main
+  cancel-in-progress: false
+
+permissions:
+  id-token: write   # OIDC login to AWS, no stored access keys
+  contents: write   # commit the new dev image tags
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  REGISTRY: ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION || 'us-east-1' }}.amazonaws.com
+  TAG: ${{ github.sha }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [auth, orders, order-service, product-service, user-service, frontend]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push
+        run: |
+          if [ "${{ matrix.service }}" = "frontend" ]; then
+            CONTEXT=projects/boutique-microservices/frontend
+            ARGS="--build-arg REACT_APP_API_URL=/api"     # browser calls /api on the Kong address
+          else
+            CONTEXT=projects/boutique-microservices/backend/services/${{ matrix.service }}
+            ARGS=""
+          fi
+          IMAGE=$REGISTRY/boutique/${{ matrix.service }}:$TAG
+          # ECR tags are immutable: skip if this commit was already built
+          if aws ecr describe-images --repository-name boutique/${{ matrix.service }} --image-ids imageTag=$TAG >/dev/null 2>&1; then
+            echo "$IMAGE already exists"; exit 0
+          fi
+          docker build $ARGS -t "$IMAGE" "$CONTEXT"
+          docker push "$IMAGE"
+
+  deploy-dev:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set new image tags in overlays/dev
+        run: |
+          F=k8s-kong/overlays/dev/kustomization.yaml
+          sed -i -E "s|(newName: ).*/boutique/|\1$REGISTRY/boutique/|; s|(newTag: ).*|\1\"$TAG\"|" "$F"
+          git diff "$F"
+
+      - name: Commit
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add k8s-kong/overlays/dev/kustomization.yaml
+          git diff --staged --quiet && { echo "No changes"; exit 0; }
+          git commit -m "deploy(dev): images ${TAG::7}"
+          for i in 1 2 3; do git pull --rebase origin main && git push && exit 0; sleep 5; done
+          exit 1

@@ -1,0 +1,131 @@
+# Infrastructure (terraform-infra/envs/<env>):
+#   Pull request -> fmt + validate + plan for dev, staging, prod (plans shown in the job log)
+#   Manual run   -> apply OR destroy ONE stack: global (ECR), dev, staging, prod
+#                   (staging/prod need approval in their GitHub environment;
+#                    destroy needs the exact confirmation text "destroy <stack>")
+#
+# Bootstrap (state bucket + GitHub roles) is NOT run here: it creates the roles this
+# pipeline logs in with, so it runs once from a laptop (terraform-infra/bootstrap).
+#
+# GitHub setup: secret AWS_TERRAFORM_ROLE_ARN (bootstrap output github_terraform_role_arn).
+# Prod's Kubernetes API is private: set repository variable TF_RUNNER_PROD to the label of a
+# self-hosted runner inside the prod VPC (or VPN-connected).
+name: terraform
+
+on:
+  pull_request:
+    paths: ["terraform-infra/**"]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Stack
+        type: choice
+        options: [global, dev, staging, prod]
+      action:
+        description: apply or destroy
+        type: choice
+        options: [apply, destroy]
+        default: apply
+      confirm:
+        description: 'For destroy only: type "destroy <stack>", e.g. destroy dev'
+        type: string
+        default: ""
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.17.2"   # latest stable; keep same as your laptop
+      - run: terraform fmt -check -recursive terraform-infra
+      - name: validate every stack
+        run: |
+          for d in terraform-infra/global terraform-infra/envs/*/; do
+            terraform -chdir="$d" init -backend=false -input=false >/dev/null
+            terraform -chdir="$d" validate
+          done
+
+  plan:
+    if: github.event_name == 'pull_request'
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [dev, staging, prod]
+    runs-on: ${{ matrix.env == 'prod' && vars.TF_RUNNER_PROD || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.17.2"   # latest stable; keep same as your laptop
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
+          aws-region: us-east-1
+      - working-directory: terraform-infra/envs/${{ matrix.env }}
+        run: |
+          terraform init -input=false
+          terraform plan -input=false -lock-timeout=5m
+
+  apply:
+    if: github.event_name == 'workflow_dispatch'
+    needs: check
+    runs-on: ${{ inputs.environment == 'prod' && vars.TF_RUNNER_PROD || 'ubuntu-latest' }}
+    environment: ${{ inputs.environment }}      # staging/prod: required reviewers
+    concurrency: terraform-${{ inputs.environment }}
+    env:
+      DIR: terraform-infra/${{ inputs.environment == 'global' && 'global' || format('envs/{0}', inputs.environment) }}
+    steps:
+      - name: Confirm destroy
+        if: inputs.action == 'destroy'
+        run: |
+          if [ "${{ inputs.confirm }}" != "destroy ${{ inputs.environment }}" ]; then
+            echo "To destroy, type exactly: destroy ${{ inputs.environment }}"; exit 1
+          fi
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.17.2"   # latest stable; keep same as your laptop
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Empty ECR before destroying global
+        if: inputs.action == 'destroy' && inputs.environment == 'global'
+        run: |
+          for r in $(aws ecr describe-repositories --query "repositories[?starts_with(repositoryName,'boutique/')].repositoryName" --output text); do
+            ids=$(aws ecr list-images --repository-name "$r" --query 'imageIds[*]' --output json)
+            [ "$ids" != "[]" ] && aws ecr batch-delete-image --repository-name "$r" --image-ids "$ids" >/dev/null && echo "emptied $r"
+          done
+      - name: Remove ALB and app before destroying an environment
+        if: inputs.action == 'destroy' && inputs.environment != 'global'
+        run: |
+          # The ALB + its DNS records are made by controllers in the cluster, not Terraform.
+          # Delete them first, or the leftover ALB blocks the VPC deletion.
+          CL=boutique-${{ inputs.environment }}
+          if aws eks describe-cluster --name "$CL" >/dev/null 2>&1; then
+            aws eks update-kubeconfig --name "$CL" --region us-east-1
+            kubectl delete -f argocd/${{ inputs.environment }}/ --ignore-not-found --wait=true || true
+            helm uninstall kong-dp -n kong 2>/dev/null || true
+            kubectl delete ingress --all -A --ignore-not-found || true
+            for i in $(seq 1 30); do
+              n=$(aws elbv2 describe-load-balancers --query "length(LoadBalancers[?LoadBalancerName=='$CL-edge'])" --output text)
+              [ "$n" = "0" ] && { echo "ALB gone"; break; }
+              echo "waiting for ALB $CL-edge to be deleted..."; sleep 10
+            done
+          fi
+      - working-directory: ${{ env.DIR }}
+        run: |
+          terraform init -input=false
+          if [ "${{ inputs.action }}" = "destroy" ]; then
+            terraform plan -destroy -input=false -out=tfplan -lock-timeout=5m
+          else
+            terraform plan -input=false -out=tfplan -lock-timeout=5m
+          fi
+          terraform apply -input=false tfplan

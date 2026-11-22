@@ -1,0 +1,31 @@
+# prod cluster: Kong data planes connected to the Konnect control plane "prod".
+# Helm chart kong/kong + values from this repo (k8s-kong/kong-dp/values.yaml + values-prod.yaml).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kong-dp
+  namespace: argocd
+spec:
+  project: default
+  sources:
+    - repoURL: https://charts.konghq.com
+      chart: kong
+      targetRevision: 3.4.1          # kong/kong chart; bump in dev first, then staging, then prod
+      helm:
+        releaseName: kong-dp
+        valueFiles:
+          - $values/k8s-kong/kong-dp/values.yaml
+          - $values/k8s-kong/kong-dp/values-prod.yaml
+    - repoURL: https://github.com/Yaathvik2020/Boutique-kong-api-gateway-konnect.git   # create this GitHub repo (or change to yours)
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kong
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff: { duration: 30s, factor: 2, maxDuration: 5m }

@@ -1,0 +1,78 @@
+# orders — place orders, "my orders".  Public path: /api/orders/*  (via Kong)
+# Called by: Kong.  Calls: product-service.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orders
+  namespace: boutique
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders
+  namespace: boutique
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: orders }
+  template:
+    metadata:
+      labels: { app: orders, version: v1 }
+    spec:
+      serviceAccountName: orders
+      containers:
+        - name: orders
+          image: boutique/orders   # real registry + tag set per environment in overlays/<env>/kustomization.yaml
+          ports:
+            - containerPort: 3005
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: "3005"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: boutique-secrets, key: ORDERS_DB_URL }
+            - name: PRODUCTS_SERVICE_URL       # direct pod-to-pod call (not through Kong)
+              value: http://product-service:3003
+          readinessProbe:
+            httpGet: { path: /health, port: 3005 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 3005 }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m,  memory: 128Mi }
+            limits:   { cpu: 500m, memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders
+  namespace: boutique
+  labels: { app: orders }
+spec:
+  type: ClusterIP
+  selector: { app: orders }
+  ports:
+    - name: http
+      port: 3005
+      targetPort: 3005
+---
+# Headless Service for Kong: its DNS name returns one IP per Ready pod, so the
+# Kong data planes balance and health-check each pod (kong-config/boutique.yaml).
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders-pods
+  namespace: boutique
+spec:
+  clusterIP: None
+  selector: { app: orders }
+  ports:
+    - name: http
+      port: 3005
+      targetPort: 3005

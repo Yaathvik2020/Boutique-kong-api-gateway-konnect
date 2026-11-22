@@ -1,0 +1,54 @@
+# PROD data planes: 3-10 pods across 3 AZs. Konnect control plane "prod".
+# Values marked TODO come from Konnect or from:  terraform -chdir=terraform-infra/envs/prod output
+image:
+  tag: "3.14.0.12"   # Kong Gateway 3.14 LTS (supported to 2029). If Konnect shows a newer 3.14.x patch, use that.
+
+env:
+  cluster_control_plane: "<id>.in.cp.konghq.com:443"        # TODO from Konnect "prod"
+  cluster_server_name: "<id>.in.cp.konghq.com"
+  cluster_telemetry_endpoint: "<id>.in.tp.konghq.com:443"
+  cluster_telemetry_server_name: "<id>.in.tp.konghq.com"
+  trusted_ips: "10.30.0.0/16"                                  # output vpc_cidr (the ALB lives in this VPC)
+
+deployment:
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::214920156606:role/boutique-prod-kong-dp   # output kong_dp_role_arn
+
+proxy:
+  ingress:
+    hostname: api.ksysglobaltech.online                                     # output api_url (Route 53 record via external-dns)
+    annotations:
+      alb.ingress.kubernetes.io/load-balancer-name: boutique-prod-edge
+      alb.ingress.kubernetes.io/certificate-arn: "<acm_certificate_arn>"   # TODO output acm_certificate_arn
+      alb.ingress.kubernetes.io/wafv2-acl-arn: "<waf_acl_arn>"             # TODO output waf_acl_arn
+      alb.ingress.kubernetes.io/load-balancer-attributes: >-
+        deletion_protection.enabled=true,access_logs.s3.enabled=true,access_logs.s3.bucket=boutique-prod-alb-logs-214920156606,idle_timeout.timeout_seconds=60,routing.http.drop_invalid_header_fields.enabled=true
+
+resources:
+  requests: { cpu: "1", memory: 1Gi }
+  limits:   { memory: 1Gi }
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 60 }
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+podAnnotations:
+  cluster-autoscaler.kubernetes.io/safe-to-evict: "false"   # autoscaler won't remove a node just to save cost
+
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels: { app.kubernetes.io/instance: kong-dp }

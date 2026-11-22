@@ -1,0 +1,87 @@
+# One-time Job: load boutique_full.sql (products, users ...) into the database:
+#   dev            -> in-cluster Postgres (boutique-postgres)
+#   staging / prod -> Amazon RDS (host, user, SSL from the boutique-secrets Secret)
+#
+# - Runs only if one of the 5 databases (auth, boutique, orders, products, users) is
+#   missing, so re-running it is harmless. Fails (not "Complete") if any is still missing.
+# - Skips the dump's "CREATE/ALTER ROLE postgres" lines, so the dump can't
+#   change the password from Secrets Manager.
+# - "OWNER TO postgres" becomes "OWNER TO CURRENT_USER": on RDS the admin user
+#   isn't called postgres.
+# - Drops "LOCALE_PROVIDER = libc LOCALE = 'en_US.utf8'" from CREATE DATABASE: the dump
+#   came from a Debian Postgres; the Alpine image doesn't have that locale, so every
+#   CREATE DATABASE failed. The server default (UTF8) is used instead.
+# - Pod label app=boutique-db-restore lets it through the Postgres NetworkPolicy.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: boutique-db-restore
+  namespace: boutique
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: boutique-db-restore
+  namespace: boutique
+spec:
+  backoffLimit: 5
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: boutique-db-restore
+    spec:
+      serviceAccountName: boutique-db-restore
+      restartPolicy: OnFailure
+      containers:
+        - name: restore
+          image: postgres:18-alpine
+          env:
+            - name: PGHOST
+              valueFrom:
+                secretKeyRef: { name: boutique-secrets, key: DB_HOST }
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef: { name: boutique-secrets, key: DB_USER }
+            - name: PGSSLMODE
+              valueFrom:
+                secretKeyRef: { name: boutique-secrets, key: PGSSLMODE }
+            - name: PGDATABASE
+              value: postgres
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: { name: boutique-secrets, key: POSTGRES_PASSWORD }
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for Postgres..."
+              until pg_isready; do sleep 2; done
+
+              have=$(psql -tAc "SELECT count(*) FROM pg_database WHERE datname IN ('auth_db','boutique_db','orders_db','products_db','users_db')")
+              if [ "$have" = "5" ]; then
+                echo "All 5 databases exist, nothing to do."
+                exit 0
+              fi
+
+              echo "Loading dump..."
+              grep -vE '^(CREATE|ALTER) ROLE' /dump/boutique_full.sql \
+                | sed -e 's/OWNER TO postgres;/OWNER TO CURRENT_USER;/' \
+                      -e "s/ LOCALE_PROVIDER = libc LOCALE = 'en_US.utf8'//" \
+                | psql -v ON_ERROR_STOP=0 -d postgres
+
+              # Fail the Job (instead of "Complete") if any database is still missing
+              have=$(psql -tAc "SELECT count(*) FROM pg_database WHERE datname IN ('auth_db','boutique_db','orders_db','products_db','users_db')")
+              psql -tAc "SELECT datname FROM pg_database WHERE datname LIKE '%_db' ORDER BY 1"
+              if [ "$have" != "5" ]; then
+                echo "ERROR: only $have of 5 databases were created. See the errors above." >&2
+                exit 1
+              fi
+              echo "Done."
+          volumeMounts:
+            - name: dump
+              mountPath: /dump
+      volumes:
+        - name: dump
+          configMap:
+            name: boutique-db-dump      # created from boutique_full.sql by kustomization.yml

@@ -1,0 +1,17 @@
+# Terraform working files
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Secret variable files: never commit (terraform.tfvars here holds no secrets on purpose)
+*.secret.tfvars
+secret.auto.tfvars
+
+# Keep .terraform.lock.hcl committed (pins provider versions)

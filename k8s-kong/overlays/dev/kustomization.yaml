@@ -1,0 +1,45 @@
+# DEV: 1 replica each, in-cluster Postgres, new images land here automatically from CI.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+components:
+  - ../../components/in-cluster-postgres
+
+images:   # updated by CI (dev) and by the promote workflow (staging, prod). Same tag = same image.
+  - name: boutique/frontend
+    newName: 214920156606.dkr.ecr.us-east-1.amazonaws.com/boutique/frontend
+    newTag: initial
+  - name: boutique/auth
+    newName: 214920156606.dkr.ecr.us-east-1.amazonaws.com/boutique/auth
+    newTag: initial
+  - name: boutique/orders
+    newName: 214920156606.dkr.ecr.us-east-1.amazonaws.com/boutique/orders
+    newTag: initial
+  - name: boutique/order-service
+    newName: 214920156606.dkr.ecr.us-east-1.amazonaws.com/boutique/order-service
+    newTag: initial
+  - name: boutique/product-service
+    newName: 214920156606.dkr.ecr.us-east-1.amazonaws.com/boutique/product-service
+    newTag: initial
+  - name: boutique/user-service
+    newName: 214920156606.dkr.ecr.us-east-1.amazonaws.com/boutique/user-service
+    newTag: initial
+
+patches:
+  # Secrets Manager names for this environment (created by terraform-infra/envs/dev)
+  - target: { kind: ExternalSecret, name: boutique-secrets }
+    patch: |-
+      - op: replace
+        path: /spec/dataFrom/0/extract/key
+        value: boutique/dev/app
+  - target: { kind: ExternalSecret, name: kong-cluster-cert }
+    patch: |-
+      - op: replace
+        path: /spec/data/0/remoteRef/key
+        value: boutique/dev/konnect-cluster-cert
+      - op: replace
+        path: /spec/data/1/remoteRef/key
+        value: boutique/dev/konnect-cluster-cert

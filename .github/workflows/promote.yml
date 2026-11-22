@@ -1,0 +1,50 @@
+# Promote: copy the image tags that are running in one environment to the next one,
+# as a pull request. Merging the PR = the release (Argo CD deploys it).
+#   dev     -> staging
+#   staging -> prod
+# Nothing is rebuilt: prod runs exactly the images that were tested in staging.
+name: promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Environment to promote INTO
+        type: choice
+        options: [staging, prod]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Copy images block
+        run: |
+          TARGET=${{ inputs.target }}
+          SOURCE=$([ "$TARGET" = "prod" ] && echo staging || echo dev)
+          echo "SOURCE=$SOURCE" >> "$GITHUB_ENV"
+          python3 scripts/promote-images.py \
+            k8s-kong/overlays/$SOURCE/kustomization.yaml \
+            k8s-kong/overlays/$TARGET/kustomization.yaml
+          git diff
+
+      - name: Open pull request
+        uses: peter-evans/create-pull-request@v8
+        with:
+          branch: promote/${{ inputs.target }}
+          title: "release(${{ inputs.target }}): promote images from ${{ env.SOURCE }}"
+          commit-message: "release(${{ inputs.target }}): promote images from ${{ env.SOURCE }}"
+          body: |
+            Copies the image tags running in **${{ env.SOURCE }}** to **${{ inputs.target }}**.
+            Merging deploys them through Argo CD on the ${{ inputs.target }} cluster.
+
+            Checklist:
+            - [ ] ${{ env.SOURCE }} smoke tests passed
+            - [ ] No open incidents
+            - [ ] Change approval recorded (prod)
+          labels: release

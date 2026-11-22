@@ -1,0 +1,73 @@
+# PROD: Amazon RDS (Multi-AZ), 3-10 pods per service spread over 3 AZs, PDBs. Images arrive only via the promote workflow (reviewed PR).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - hpa.yaml
+  - pdb.yaml
+
+images:   # updated by CI (dev) and by the promote workflow (staging, prod). Same tag = same image.
+  - name: boutique/frontend
+    newName: 214920156606.dkr.ecr.us-east-1.amazonaws.com/boutique/frontend
+    newTag: initial
+  - name: boutique/auth
+    newName: 214920156606.dkr.ecr.us-east-1.amazonaws.com/boutique/auth
+    newTag: initial
+  - name: boutique/orders
+    newName: 214920156606.dkr.ecr.us-east-1.amazonaws.com/boutique/orders
+    newTag: initial
+  - name: boutique/order-service
+    newName: 214920156606.dkr.ecr.us-east-1.amazonaws.com/boutique/order-service
+    newTag: initial
+  - name: boutique/product-service
+    newName: 214920156606.dkr.ecr.us-east-1.amazonaws.com/boutique/product-service
+    newTag: initial
+  - name: boutique/user-service
+    newName: 214920156606.dkr.ecr.us-east-1.amazonaws.com/boutique/user-service
+    newTag: initial
+
+patches:
+  # Secrets Manager names for this environment (created by terraform-infra/envs/prod)
+  - target: { kind: ExternalSecret, name: boutique-secrets }
+    patch: |-
+      - op: replace
+        path: /spec/dataFrom/0/extract/key
+        value: boutique/prod/app
+  - target: { kind: ExternalSecret, name: kong-cluster-cert }
+    patch: |-
+      - op: replace
+        path: /spec/data/0/remoteRef/key
+        value: boutique/prod/konnect-cluster-cert
+      - op: replace
+        path: /spec/data/1/remoteRef/key
+        value: boutique/prod/konnect-cluster-cert
+  # The HPA owns the replica count: remove it from the Deployments
+  # (otherwise Argo CD would keep resetting it to 1).
+  - target: { kind: Deployment, namespace: boutique }
+    patch: |-
+      - op: remove
+        path: /spec/replicas
+  # Spread each service's pods across availability zones and nodes
+  - target: { kind: Deployment, namespace: boutique }
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: any
+      spec:
+        template:
+          spec:
+            topologySpreadConstraints:
+              - maxSkew: 1
+                topologyKey: topology.kubernetes.io/zone
+                whenUnsatisfiable: ScheduleAnyway
+                labelSelector:
+                  matchExpressions: [{ key: app, operator: Exists }]
+                matchLabelKeys: [app]
+              - maxSkew: 1
+                topologyKey: kubernetes.io/hostname
+                whenUnsatisfiable: ScheduleAnyway
+                labelSelector:
+                  matchExpressions: [{ key: app, operator: Exists }]
+                matchLabelKeys: [app]

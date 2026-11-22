@@ -1,0 +1,82 @@
+# user-service — profile, addresses.  Public path: /api/users/*  (via Kong)
+# Called by: Kong only.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: user-service
+  namespace: boutique
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service
+  namespace: boutique
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: user-service }
+  template:
+    metadata:
+      labels: { app: user-service, version: v1 }
+    spec:
+      serviceAccountName: user-service
+      containers:
+        - name: user-service
+          image: boutique/user-service   # real registry + tag set per environment in overlays/<env>/kustomization.yaml
+          ports:
+            - containerPort: 3006
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: "3006"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: boutique-secrets, key: USERS_DB_URL }
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef: { name: boutique-secrets, key: JWT_SECRET }
+            - name: JWT_REFRESH_SECRET
+              valueFrom:
+                secretKeyRef: { name: boutique-secrets, key: JWT_REFRESH_SECRET }
+          readinessProbe:
+            httpGet: { path: /health, port: 3006 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 3006 }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m,  memory: 128Mi }
+            limits:   { cpu: 500m, memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-service
+  namespace: boutique
+  labels: { app: user-service }
+spec:
+  type: ClusterIP
+  selector: { app: user-service }
+  ports:
+    - name: http
+      port: 3006
+      targetPort: 3006
+---
+# Headless Service for Kong: its DNS name returns one IP per Ready pod, so the
+# Kong data planes balance and health-check each pod (kong-config/boutique.yaml).
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-service-pods
+  namespace: boutique
+spec:
+  clusterIP: None
+  selector: { app: user-service }
+  ports:
+    - name: http
+      port: 3006
+      targetPort: 3006

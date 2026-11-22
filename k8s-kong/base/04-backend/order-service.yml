@@ -1,0 +1,65 @@
+# order-service — simple order writer (POST /orders).  NOT public.
+# The old gateway never exposed it (/api/orders goes to "orders"), so Kong doesn't either.
+# Nothing calls it today; it's kept running, internal-only, for future use.
+# Calls: product-service.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: order-service
+  namespace: boutique
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+  namespace: boutique
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: order-service }
+  template:
+    metadata:
+      labels: { app: order-service, version: v1 }
+    spec:
+      serviceAccountName: order-service
+      containers:
+        - name: order-service
+          image: boutique/order-service   # real registry + tag set per environment in overlays/<env>/kustomization.yaml
+          ports:
+            - containerPort: 3004
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: "3004"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: boutique-secrets, key: ORDERS_DB_URL }
+            - name: PRODUCT_SERVICE_URL
+              value: http://product-service:3003
+          readinessProbe:
+            httpGet: { path: /health, port: 3004 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 3004 }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m,  memory: 128Mi }
+            limits:   { cpu: 500m, memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-service
+  namespace: boutique
+  labels: { app: order-service }
+spec:
+  type: ClusterIP
+  selector: { app: order-service }
+  ports:
+    - name: http
+      port: 3004
+      targetPort: 3004

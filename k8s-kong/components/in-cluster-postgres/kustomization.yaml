@@ -1,0 +1,5 @@
+# Kustomize component: adds the in-cluster Postgres. Used by overlays/dev only.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - postgres.yml

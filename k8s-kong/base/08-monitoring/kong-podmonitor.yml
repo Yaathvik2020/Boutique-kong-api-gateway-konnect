@@ -1,0 +1,17 @@
+# Prometheus scrapes the Kong data planes (route/service metrics from the global
+# "prometheus" plugin in kong-config/boutique.yaml) on their status port.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: kong-data-planes
+  namespace: kong
+  labels:
+    release: kube-prometheus-stack      # your Prometheus picks up monitors with this label
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: kong-dp
+  podMetricsEndpoints:
+    - port: status
+      path: /metrics
+      interval: 15s

@@ -1,0 +1,360 @@
+# Boutique gateway config for Konnect (hybrid mode). Applied with decK:
+#   kong-config/deck.sh dev diff     # show changes
+#   kong-config/deck.sh dev sync     # apply to the Konnect control plane -> pushed to all data planes
+#
+#   http://<kong-address>/                 -> frontend:3000
+#   http://<kong-address>/api/auth/...     -> auth:3002
+#   http://<kong-address>/api/products/... -> product-service:3003
+#   http://<kong-address>/api/orders/...   -> orders:3005
+#   http://<kong-address>/api/users/...    -> user-service:3006
+#
+# strip_path: true -> Kong removes the matched prefix before forwarding
+#   /api/products/42 -> product-service receives /42
+#
+# Every API service gets: rate limit 300/min per IP (shared across all Kong pods via Redis),
+# 2 MB body limit, X-Request-ID.
+#
+# ${{ env "DECK_REDIS_HOST" }} and ${{ env "DECK_REDIS_SECRET" }} come from
+# kong-config/envs/<env>.env (deck.sh loads it).
+# Every upstream: Kong checks GET /health on each pod every 10s and takes a pod out
+# after 5 errors or 3 timeouts in a row (circuit breaker).
+_format_version: "3.0"
+
+# ---------------------------------------------------------------- vaults
+# Secrets are read by the data planes at runtime straight from AWS Secrets Manager,
+# using the Kong pods' own IAM role (IRSA, read-only, only this env's Redis secret).
+# They are never stored in Konnect, Git or Kubernetes.
+#   {vault://aws-sm/<secret-name>/<json-key>}
+vaults:
+  - name: aws
+    prefix: aws-sm
+    description: AWS Secrets Manager (read with the Kong data planes' IAM role)
+    config:
+      region: us-east-1
+
+# ---------------------------------------------------------------- global
+plugins:
+  - name: prometheus            # metrics per route/service on the data planes' :8100/metrics
+    config:
+      status_code_metrics: true
+      latency_metrics: true
+      bandwidth_metrics: true
+      upstream_health_metrics: true
+
+# ---------------------------------------------------------------- upstreams
+# Targets are the headless "<name>-pods" Services: one DNS record per Ready pod.
+upstreams:
+  - name: auth-upstream
+    algorithm: round-robin
+    healthchecks:
+      threshold: 50
+      active:
+        type: http
+        http_path: /health
+        timeout: 2
+        healthy:   { interval: 10, successes: 2 }
+        unhealthy: { interval: 10, http_failures: 3, tcp_failures: 3, timeouts: 3 }
+      passive:
+        type: http
+        healthy:   { successes: 5 }
+        unhealthy: { http_failures: 5, tcp_failures: 3, timeouts: 3 }
+    targets:
+      - target: auth-pods.boutique.svc.cluster.local:3002
+
+  - name: product-upstream
+    algorithm: round-robin
+    healthchecks:
+      threshold: 50
+      active:
+        type: http
+        http_path: /health
+        timeout: 2
+        healthy:   { interval: 10, successes: 2 }
+        unhealthy: { interval: 10, http_failures: 3, tcp_failures: 3, timeouts: 3 }
+      passive:
+        type: http
+        healthy:   { successes: 5 }
+        unhealthy: { http_failures: 5, tcp_failures: 3, timeouts: 3 }
+    targets:
+      - target: product-service-pods.boutique.svc.cluster.local:3003
+
+  - name: orders-upstream
+    algorithm: round-robin
+    healthchecks:
+      threshold: 50
+      active:
+        type: http
+        http_path: /health
+        timeout: 2
+        healthy:   { interval: 10, successes: 2 }
+        unhealthy: { interval: 10, http_failures: 3, tcp_failures: 3, timeouts: 3 }
+      passive:
+        type: http
+        healthy:   { successes: 5 }
+        unhealthy: { http_failures: 5, tcp_failures: 3, timeouts: 3 }
+    targets:
+      - target: orders-pods.boutique.svc.cluster.local:3005
+
+  - name: users-upstream
+    algorithm: round-robin
+    healthchecks:
+      threshold: 50
+      active:
+        type: http
+        http_path: /health
+        timeout: 2
+        healthy:   { interval: 10, successes: 2 }
+        unhealthy: { interval: 10, http_failures: 3, tcp_failures: 3, timeouts: 3 }
+      passive:
+        type: http
+        healthy:   { successes: 5 }
+        unhealthy: { http_failures: 5, tcp_failures: 3, timeouts: 3 }
+    targets:
+      - target: user-service-pods.boutique.svc.cluster.local:3006
+
+  - name: frontend-upstream
+    algorithm: round-robin
+    healthchecks:
+      active:
+        type: http
+        http_path: /             # the React site has no /health
+        timeout: 2
+        healthy:   { interval: 10, successes: 2 }
+        unhealthy: { interval: 10, http_failures: 3, tcp_failures: 3, timeouts: 3 }
+    targets:
+      - target: frontend-pods.boutique.svc.cluster.local:3000
+
+# ---------------------------------------------------------------- services + routes
+services:
+  - name: frontend
+    host: frontend-upstream
+    port: 3000
+    protocol: http
+    connect_timeout: 3000
+    read_timeout: 10000
+    write_timeout: 10000
+    retries: 2                   # static files: safe to retry
+    routes:
+      - name: frontend
+        paths: ["/"]
+        protocols: [http, https]
+        strip_path: false
+
+  - name: auth
+    host: auth-upstream
+    port: 3002
+    protocol: http
+    connect_timeout: 5000
+    read_timeout: 30000
+    write_timeout: 30000
+    retries: 0                   # login / register: never send twice
+    routes:
+      - name: auth
+        paths: ["/api/auth"]
+        protocols: [http, https]
+        strip_path: true
+    plugins:
+      - name: rate-limiting-advanced
+        config:
+          limit: [300]                 # 300 requests ...
+          window_size: [60]            # ... per 60 s ...
+          window_type: sliding
+          identifier: ip               # ... per client IP, counted across ALL Kong pods (Redis)
+          strategy: redis
+          sync_rate: 0.5               # pods sync counters with Redis every 0.5 s (fast; a burst may overshoot slightly)
+          namespace: boutique-auth
+          hide_client_headers: false   # clients see RateLimit-Remaining / Retry-After
+          redis:
+            host: ${{ env "DECK_REDIS_HOST" }}
+            port: 6379
+            ssl: true
+            ssl_verify: true
+            server_name: ${{ env "DECK_REDIS_HOST" }}
+            password: '{vault://aws-sm/${{ env "DECK_REDIS_SECRET" }}/password}'   # Secrets Manager boutique-<env>-kong-redis
+      - name: request-size-limiting
+        config:
+          allowed_payload_size: 2
+          size_unit: megabytes
+      - name: correlation-id
+        config:
+          header_name: X-Request-ID
+          generator: uuid
+          echo_downstream: true
+
+  - name: product-service
+    host: product-upstream
+    port: 3003
+    protocol: http
+    connect_timeout: 3000
+    read_timeout: 10000
+    write_timeout: 10000
+    retries: 3                   # read-only lookups: safe to retry
+    routes:
+      - name: products
+        paths: ["/api/products"]
+        protocols: [http, https]
+        strip_path: true
+
+      # ---- Partner API: same product-service, but only for partners with an API key ----
+      #   curl -H "apikey: <key>" https://<api-host>/partner/products
+      # Route plugins replace the service's plugin of the same name for this route only,
+      # so partners are rate-limited per partner (consumer), not per IP.
+      - name: partner-products
+        paths: ["/partner/products"]
+        protocols: [https]           # partners must use HTTPS (the ALB terminates TLS, Kong sees X-Forwarded-Proto)
+        https_redirect_status_code: 426
+        strip_path: true
+        plugins:
+          - name: key-auth
+            config:
+              key_names: [apikey]      # header "apikey: <key>" (or ?apikey=<key>)
+              key_in_header: true
+              key_in_query: false      # keys in URLs end up in logs: header only
+              hide_credentials: true   # the backend never sees the key
+          - name: acl
+            config:
+              allow: [partners]        # only consumers in the "partners" group
+              hide_groups_header: true
+          - name: rate-limiting-advanced
+            config:
+              limit: [1000]                # 1000 requests ...
+              window_size: [60]            # ... per minute ...
+              window_type: sliding
+              identifier: consumer         # ... per PARTNER, counted across all Kong pods (Redis)
+              strategy: redis
+              sync_rate: 0.5
+              namespace: boutique-partner-products
+              hide_client_headers: false
+              redis:
+                host: ${{ env "DECK_REDIS_HOST" }}
+                port: 6379
+                ssl: true
+                ssl_verify: true
+                server_name: ${{ env "DECK_REDIS_HOST" }}
+                password: '{vault://aws-sm/${{ env "DECK_REDIS_SECRET" }}/password}'
+    plugins:
+      - name: rate-limiting-advanced
+        config:
+          limit: [300]                 # 300 requests ...
+          window_size: [60]            # ... per 60 s ...
+          window_type: sliding
+          identifier: ip               # ... per client IP, counted across ALL Kong pods (Redis)
+          strategy: redis
+          sync_rate: 0.5               # pods sync counters with Redis every 0.5 s (fast; a burst may overshoot slightly)
+          namespace: boutique-products
+          hide_client_headers: false   # clients see RateLimit-Remaining / Retry-After
+          redis:
+            host: ${{ env "DECK_REDIS_HOST" }}
+            port: 6379
+            ssl: true
+            ssl_verify: true
+            server_name: ${{ env "DECK_REDIS_HOST" }}
+            password: '{vault://aws-sm/${{ env "DECK_REDIS_SECRET" }}/password}'   # Secrets Manager boutique-<env>-kong-redis
+      - name: request-size-limiting
+        config:
+          allowed_payload_size: 2
+          size_unit: megabytes
+      - name: correlation-id
+        config:
+          header_name: X-Request-ID
+          generator: uuid
+          echo_downstream: true
+
+
+  - name: orders
+    host: orders-upstream
+    port: 3005
+    protocol: http
+    connect_timeout: 5000
+    read_timeout: 30000
+    write_timeout: 30000
+    retries: 0                   # placing an order must never be sent twice
+    routes:
+      - name: orders
+        paths: ["/api/orders"]
+        protocols: [http, https]
+        strip_path: true
+    plugins:
+      - name: rate-limiting-advanced
+        config:
+          limit: [300]                 # 300 requests ...
+          window_size: [60]            # ... per 60 s ...
+          window_type: sliding
+          identifier: ip               # ... per client IP, counted across ALL Kong pods (Redis)
+          strategy: redis
+          sync_rate: 0.5               # pods sync counters with Redis every 0.5 s (fast; a burst may overshoot slightly)
+          namespace: boutique-orders
+          hide_client_headers: false   # clients see RateLimit-Remaining / Retry-After
+          redis:
+            host: ${{ env "DECK_REDIS_HOST" }}
+            port: 6379
+            ssl: true
+            ssl_verify: true
+            server_name: ${{ env "DECK_REDIS_HOST" }}
+            password: '{vault://aws-sm/${{ env "DECK_REDIS_SECRET" }}/password}'   # Secrets Manager boutique-<env>-kong-redis
+      - name: request-size-limiting
+        config:
+          allowed_payload_size: 2
+          size_unit: megabytes
+      - name: correlation-id
+        config:
+          header_name: X-Request-ID
+          generator: uuid
+          echo_downstream: true
+
+
+  - name: user-service
+    host: users-upstream
+    port: 3006
+    protocol: http
+    connect_timeout: 5000
+    read_timeout: 30000
+    write_timeout: 30000
+    retries: 0                   # profile updates: no retries
+    routes:
+      - name: users
+        paths: ["/api/users"]
+        protocols: [http, https]
+        strip_path: true
+    plugins:
+      - name: rate-limiting-advanced
+        config:
+          limit: [300]                 # 300 requests ...
+          window_size: [60]            # ... per 60 s ...
+          window_type: sliding
+          identifier: ip               # ... per client IP, counted across ALL Kong pods (Redis)
+          strategy: redis
+          sync_rate: 0.5               # pods sync counters with Redis every 0.5 s (fast; a burst may overshoot slightly)
+          namespace: boutique-users
+          hide_client_headers: false   # clients see RateLimit-Remaining / Retry-After
+          redis:
+            host: ${{ env "DECK_REDIS_HOST" }}
+            port: 6379
+            ssl: true
+            ssl_verify: true
+            server_name: ${{ env "DECK_REDIS_HOST" }}
+            password: '{vault://aws-sm/${{ env "DECK_REDIS_SECRET" }}/password}'   # Secrets Manager boutique-<env>-kong-redis
+      - name: request-size-limiting
+        config:
+          allowed_payload_size: 2
+          size_unit: megabytes
+      - name: correlation-id
+        config:
+          header_name: X-Request-ID
+          generator: uuid
+          echo_downstream: true
+
+
+# ---------------------------------------------------------------- consumers (partners)
+# One consumer per partner. The API key comes from AWS Secrets Manager
+# (boutique/<env>/partner-api-keys, JSON {"acme": "<key>"}); deck.sh reads it into
+# DECK_PARTNER_ACME_KEY. Add a partner: add a consumer here + a key in that secret
+# + an export line in deck.sh.
+consumers:
+  - username: partner-acme
+    custom_id: acme-insurance-broker
+    tags: [partner]
+    keyauth_credentials:
+      - key: ${{ env "DECK_PARTNER_ACME_KEY" }}
+    acls:
+      - group: partners

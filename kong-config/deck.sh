@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Apply kong-config/boutique.yaml to a Konnect control plane with decK.
+#   kong-config/deck.sh <control-plane-name> <ping|validate|diff|sync|dump>
+#   kong-config/deck.sh dev diff
+#
+# Control plane names = environment names (dev, staging, prod); values come from envs/<env>.env
+#
+# Needs the Konnect system-account token (Organization -> System accounts -> deck-ci -> Manage Tokens):
+#   kept in AWS Secrets Manager, secret "boutique/konnect-deck-token" (override: KONNECT_TOKEN_SECRET),
+#   read with your AWS login. Store/rotate it with:
+#     aws secretsmanager create-secret --name boutique/konnect-deck-token --secret-string 'spat_...'   # first time
+#     aws secretsmanager put-secret-value --secret-id boutique/konnect-deck-token --secret-string 'spat_...'  # rotate
+#   If DECK_KONNECT_TOKEN is already set (e.g. CI secret), that value is used instead.
+#   KONNECT_ADDR        optional, default https://in.api.konghq.com (India region).
+#                       Use the region your Konnect org is in, e.g. https://us.api.konghq.com
+set -euo pipefail
+
+CP="${1:?control plane name in Konnect, e.g. dev}"
+ACTION="${2:-diff}"
+DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ -z "${DECK_KONNECT_TOKEN:-}" ]]; then
+  TOKEN_SECRET="${KONNECT_TOKEN_SECRET:-boutique/konnect-deck-token}"
+  DECK_KONNECT_TOKEN="$(aws secretsmanager get-secret-value --region "${AWS_REGION:-us-east-1}" \
+      --secret-id "$TOKEN_SECRET" --query SecretString --output text 2>/dev/null)" || {
+    echo "Konnect token not found in Secrets Manager ($TOKEN_SECRET). Store it with:" >&2
+    echo "  aws secretsmanager create-secret --name $TOKEN_SECRET --secret-string 'spat_...'" >&2
+    exit 1
+  }
+  export DECK_KONNECT_TOKEN
+fi
+
+# Per-environment values (Redis host ...) for ${{ env "DECK_..." }} in boutique.yaml
+ENV_FILE="$DIR/envs/$CP.env"
+[[ -f "$ENV_FILE" ]] || { echo "Missing $ENV_FILE" >&2; exit 1; }
+set -a
+# shellcheck source=/dev/null
+source "$ENV_FILE"
+set +a
+# Partner API keys (key-auth) from Secrets Manager: boutique/<env>/partner-api-keys = {"acme": "<key>"}
+if [[ "$ACTION" != "ping" && -z "${DECK_PARTNER_ACME_KEY:-}" ]]; then
+  KEYS_SECRET="boutique/$CP/partner-api-keys"
+  if ! KEYS_JSON="$(aws secretsmanager get-secret-value --region "${AWS_REGION:-us-east-1}" \
+        --secret-id "$KEYS_SECRET" --query SecretString --output text 2>/dev/null)"; then
+    echo "Partner API keys not found in Secrets Manager ($KEYS_SECRET). Create them with:" >&2
+    echo "  aws secretsmanager create-secret --name $KEYS_SECRET --secret-string \"{\\\"acme\\\": \\\"\$(openssl rand -hex 24)\\\"}\"" >&2
+    exit 1
+  fi
+  DECK_PARTNER_ACME_KEY="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["acme"])' <<<"$KEYS_JSON")"
+  export DECK_PARTNER_ACME_KEY
+fi
+
+if [[ "$ACTION" != "ping" && "${DECK_REDIS_HOST:-}" == *"<"* ]]; then
+  echo "Set DECK_REDIS_HOST in $ENV_FILE (terraform -chdir=terraform-infra/envs/$CP output -raw redis_host)" >&2
+  exit 1
+fi
+
+CONN=(--konnect-addr "${KONNECT_ADDR:-https://in.api.konghq.com}"
+      --konnect-control-plane-name "$CP")
+
+case "$ACTION" in
+  ping)     deck gateway ping     "${CONN[@]}" ;;
+  validate) deck gateway validate "${CONN[@]}" "$DIR/boutique.yaml" ;;
+  diff)     deck gateway diff     "${CONN[@]}" "$DIR/boutique.yaml" ;;
+  sync)     deck gateway sync     "${CONN[@]}" "$DIR/boutique.yaml" ;;
+  dump)
+    out="${3:-backup-$CP-$(date +%Y%m%d-%H%M%S).yaml}"
+    deck gateway dump "${CONN[@]}" -o "$out" --yes
+    echo "Backup written: $out" ;;
+  *) echo "Unknown action: $ACTION (ping|validate|diff|sync|dump)" >&2; exit 1 ;;
+esac

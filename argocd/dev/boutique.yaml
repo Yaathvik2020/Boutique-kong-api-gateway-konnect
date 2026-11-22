@@ -1,0 +1,25 @@
+# dev cluster: the boutique app (k8s-kong/overlays/dev).
+# Apply once on the dev cluster:  kubectl apply -f argocd/dev/
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: boutique
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Yaathvik2020/Boutique-kong-api-gateway-konnect.git   # create this GitHub repo (or change to yours)
+    targetRevision: main
+    path: k8s-kong/overlays/dev
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: boutique
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff: { duration: 30s, factor: 2, maxDuration: 5m }

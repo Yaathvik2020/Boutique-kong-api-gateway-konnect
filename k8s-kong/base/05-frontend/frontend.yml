@@ -1,0 +1,73 @@
+# frontend — the React website.  Public path: /  (via Kong)
+#
+# IMPORTANT: the browser calls the API at "/api/..." on the SAME address as the
+# website, and Kong routes it. Create React App bakes REACT_APP_API_URL into the
+# JavaScript at BUILD time, so the frontend image must be built with
+# REACT_APP_API_URL=/api (see README, "Frontend image"). Put that new tag below.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: frontend
+  namespace: boutique
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: boutique
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: frontend }
+  template:
+    metadata:
+      labels: { app: frontend, version: v1 }
+    spec:
+      serviceAccountName: frontend
+      containers:
+        - name: frontend
+          # <-- replace the tag with the image rebuilt using REACT_APP_API_URL=/api
+          image: boutique/frontend   # real registry + tag set per environment in overlays/<env>/kustomization.yaml
+          ports:
+            - containerPort: 3000
+          readinessProbe:
+            httpGet: { path: /, port: 3000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: 3000 }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 25m,  memory: 64Mi }
+            limits:   { cpu: 250m, memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: boutique
+  labels: { app: frontend }
+spec:
+  type: ClusterIP
+  selector: { app: frontend }
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+---
+# Headless Service for Kong: its DNS name returns one IP per Ready pod, so the
+# Kong data planes balance and health-check each pod (kong-config/boutique.yaml).
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-pods
+  namespace: boutique
+spec:
+  clusterIP: None
+  selector: { app: frontend }
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000

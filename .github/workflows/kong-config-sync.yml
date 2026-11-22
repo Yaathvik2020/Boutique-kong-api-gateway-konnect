@@ -1,0 +1,54 @@
+# Reusable: sync kong-config/ to one Konnect control plane (called by kong-config.yml).
+name: kong-config-sync
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+
+permissions:
+  id-token: write   # GitHub OIDC -> AWS role
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}     # staging/prod wait here for approval
+    env:
+      KONNECT_ADDR: ${{ vars.KONNECT_ADDR || 'https://in.api.konghq.com' }}
+      CP: ${{ inputs.environment }}
+      URL: ${{ vars.KONG_PUBLIC_URL }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: kong/setup-deck@v1
+        with:
+          deck-version: "1.70.1"        # pinned: latest stable decK
+      - uses: aws-actions/configure-aws-credentials@v6   # deck.sh reads the Konnect token + partner keys from Secrets Manager
+        with:
+          role-to-assume: ${{ secrets.AWS_DECK_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Backup current config
+        run: kong-config/deck.sh "$CP" dump backup.yaml
+      - uses: actions/upload-artifact@v7
+        with: { name: "kong-backup-${{ inputs.environment }}", path: backup.yaml, retention-days: 90 }
+
+      - name: Sync
+        run: kong-config/deck.sh "$CP" sync
+
+      - name: Smoke test (restore backup if it fails)
+        run: |
+          if [ -z "$URL" ]; then echo "KONG_PUBLIC_URL not set for $CP, skipping"; exit 0; fi
+          sleep 15   # Konnect pushes config to the data planes within seconds
+          ok=1
+          for path in / /api/products; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$URL$path")
+            echo "$path -> $code"; [ "$code" = "200" ] || ok=0
+          done
+          if [ "$ok" != "1" ]; then
+            echo "Smoke test failed: restoring the previous config"
+            deck gateway sync --konnect-addr "$KONNECT_ADDR" --konnect-control-plane-name "$CP" backup.yaml
+            exit 1
+          fi

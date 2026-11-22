@@ -1,0 +1,76 @@
+# product-service — product catalogue.  Public path: /api/products/*  (via Kong)
+# Called by: Kong, orders, order-service (to look up product prices).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: product-service
+  namespace: boutique
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: product-service
+  namespace: boutique
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: product-service }
+  template:
+    metadata:
+      labels: { app: product-service, version: v1 }
+    spec:
+      serviceAccountName: product-service
+      containers:
+        - name: product-service
+          image: boutique/product-service   # real registry + tag set per environment in overlays/<env>/kustomization.yaml
+          ports:
+            - containerPort: 3003
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: "3003"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: boutique-secrets, key: PRODUCTS_DB_URL }
+          readinessProbe:
+            httpGet: { path: /health, port: 3003 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 3003 }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m,  memory: 128Mi }
+            limits:   { cpu: 500m, memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: product-service
+  namespace: boutique
+  labels: { app: product-service }
+spec:
+  type: ClusterIP
+  selector: { app: product-service }
+  ports:
+    - name: http
+      port: 3003
+      targetPort: 3003
+---
+# Headless Service for Kong: its DNS name returns one IP per Ready pod, so the
+# Kong data planes balance and health-check each pod (kong-config/boutique.yaml).
+apiVersion: v1
+kind: Service
+metadata:
+  name: product-service-pods
+  namespace: boutique
+spec:
+  clusterIP: None
+  selector: { app: product-service }
+  ports:
+    - name: http
+      port: 3003
+      targetPort: 3003

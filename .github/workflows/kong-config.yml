@@ -1,0 +1,79 @@
+# Gateway config (decK -> Konnect), one Konnect control plane per environment:
+#   dev, staging, prod   (same names as the environments)
+#
+#   Pull request touching kong-config/ -> validate + diff for all 3, diff posted on the PR
+#   Merge to main                      -> dev (automatic) -> staging (approval) -> prod (approval)
+#   Each sync: backup, sync, smoke test, restore backup if the smoke test fails
+#
+# GitHub setup:
+#   Environments dev, staging, prod (staging/prod with required reviewers)
+#   Secret   AWS_DECK_ROLE_ARN  bootstrap output github_deck_role_arn. deck.sh reads the Konnect token
+#                               (boutique/konnect-deck-token) and partner keys from Secrets Manager
+#   Variable KONG_PUBLIC_URL    per environment, e.g. https://api-dev.ksysglobaltech.online
+#   Variable KONNECT_ADDR       optional, default https://in.api.konghq.com
+name: kong-config
+
+on:
+  pull_request:
+    paths: ["kong-config/**"]
+  push:
+    branches: [main]
+    paths: ["kong-config/**"]
+  workflow_dispatch:
+
+permissions:
+  id-token: write     # GitHub OIDC -> AWS role (Secrets Manager)
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: kong-config
+  cancel-in-progress: false
+
+env:
+  KONNECT_ADDR: ${{ vars.KONNECT_ADDR || 'https://in.api.konghq.com' }}
+
+jobs:
+  diff:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cp: [dev, staging, prod]
+    continue-on-error: ${{ matrix.cp != 'dev' }}   # staging/prod may not be built yet
+    steps:
+      - uses: actions/checkout@v7
+      - uses: kong/setup-deck@v1
+        with:
+          deck-version: "1.70.1"        # pinned: latest stable decK
+      - uses: aws-actions/configure-aws-credentials@v6   # deck.sh reads the Konnect token + partner keys from Secrets Manager
+        with:
+          role-to-assume: ${{ secrets.AWS_DECK_ROLE_ARN }}
+          aws-region: us-east-1
+      - run: kong-config/deck.sh ${{ matrix.cp }} validate
+      - run: kong-config/deck.sh ${{ matrix.cp }} diff | tee diff.txt
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const body = '### decK diff: `${{ matrix.cp }}`\n```\n' + fs.readFileSync('diff.txt', 'utf8').slice(0, 60000) + '\n```';
+            await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
+
+  dev:
+    if: github.event_name != 'pull_request'
+    uses: ./.github/workflows/kong-config-sync.yml
+    with: { environment: dev }
+    secrets: inherit
+
+  staging:
+    needs: dev
+    uses: ./.github/workflows/kong-config-sync.yml
+    with: { environment: staging }
+    secrets: inherit
+
+  prod:
+    needs: staging
+    uses: ./.github/workflows/kong-config-sync.yml
+    with: { environment: prod }
+    secrets: inherit

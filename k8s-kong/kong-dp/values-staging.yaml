@@ -1,0 +1,39 @@
+# STAGING data planes: 2-4 pods. Konnect control plane "staging".
+# Values marked TODO come from Konnect or from:  terraform -chdir=terraform-infra/envs/staging output
+image:
+  tag: "3.14.0.12"   # Kong Gateway 3.14 LTS (supported to 2029). If Konnect shows a newer 3.14.x patch, use that.
+
+env:
+  cluster_control_plane: "<id>.in.cp.konghq.com:443"        # TODO from Konnect "staging"
+  cluster_server_name: "<id>.in.cp.konghq.com"
+  cluster_telemetry_endpoint: "<id>.in.tp.konghq.com:443"
+  cluster_telemetry_server_name: "<id>.in.tp.konghq.com"
+  trusted_ips: "10.20.0.0/16"                                  # output vpc_cidr (the ALB lives in this VPC)
+
+deployment:
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::214920156606:role/boutique-staging-kong-dp   # output kong_dp_role_arn
+
+proxy:
+  ingress:
+    hostname: api-staging.ksysglobaltech.online                                     # output api_url (Route 53 record via external-dns)
+    annotations:
+      alb.ingress.kubernetes.io/load-balancer-name: boutique-staging-edge
+      alb.ingress.kubernetes.io/certificate-arn: "<acm_certificate_arn>"   # TODO output acm_certificate_arn
+      alb.ingress.kubernetes.io/wafv2-acl-arn: "<waf_acl_arn>"             # TODO output waf_acl_arn
+      alb.ingress.kubernetes.io/load-balancer-attributes: >-
+        deletion_protection.enabled=false,access_logs.s3.enabled=true,access_logs.s3.bucket=boutique-staging-alb-logs-214920156606,idle_timeout.timeout_seconds=60,routing.http.drop_invalid_header_fields.enabled=true
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 60 }
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1

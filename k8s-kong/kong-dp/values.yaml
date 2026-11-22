@@ -1,0 +1,99 @@
+# Kong data planes (hybrid mode) - settings shared by every environment.
+#
+#   client -> Route 53 (external-dns) -> ALB (ACM TLS + AWS WAF) -> Kong pods :8000 -> services
+#
+# The ALB is created by the AWS Load Balancer Controller from the Ingress below.
+# Deployed by Argo CD (argocd/<env>/kong-dp.yaml) with the official kong/kong chart:
+#   values.yaml + values-<env>.yaml   (env file: Konnect hosts, image tag, size)
+# The Konnect certificate comes from Secrets Manager via External Secrets
+# (Secret kong/kong-cluster-cert, see k8s-kong/base/02-external-secrets.yml).
+
+image:
+  repository: kong/kong-gateway
+  # tag: set in values-<env>.yaml (copy it from Konnect -> Data plane nodes -> New node)
+
+env:
+  role: data_plane
+  database: "off"
+  konnect_mode: "on"
+  vitals: "off"
+  cluster_mtls: pki
+  cluster_cert: /etc/secrets/kong-cluster-cert/tls.crt
+  cluster_cert_key: /etc/secrets/kong-cluster-cert/tls.key
+  lua_ssl_trusted_certificate: system
+  dns_order: "LAST,A,CNAME"      # upstream targets are headless Services (one A record per pod)
+  nginx_worker_processes: "1"    # = CPU request
+  proxy_access_log: /dev/stdout
+  proxy_error_log: /dev/stderr
+  admin_access_log: "off"
+  headers: latency_tokens        # hide the Kong version header, keep latency headers
+  # Real client IP from the ALB's X-Forwarded-For (rate limit per IP needs it).
+  # trusted_ips (= this env's VPC CIDR) is set in values-<env>.yaml.
+  real_ip_header: X-Forwarded-For
+  real_ip_recursive: "on"
+
+# IAM role (IRSA) for the Kong pods: Kong's AWS vault reads the Redis password straight from
+# AWS Secrets Manager ({vault://aws-sm/boutique-<env>-kong-redis/password}). The role ARN is
+# set per environment in values-<env>.yaml (terraform output kong_dp_role_arn).
+deployment:
+  serviceAccount:
+    create: true
+    name: kong-dp                 # must match the IAM role trust (terraform-infra/modules/addons)
+
+# All config comes from Konnect (decK). No Admin API / Manager / Ingress Controller here.
+admin:
+  enabled: false
+manager:
+  enabled: false
+ingressController:
+  enabled: false
+
+proxy:
+  enabled: true
+  type: ClusterIP                # not exposed directly: only the ALB reaches it
+  http:
+    enabled: true
+    servicePort: 80
+    containerPort: 8000
+  tls:
+    enabled: false               # TLS ends at the ALB (ACM certificate); ALB -> Kong is HTTP inside the VPC
+  ingress:
+    enabled: true
+    ingressClassName: alb        # AWS Load Balancer Controller
+    path: /
+    pathType: Prefix
+    # hostname: set in values-<env>.yaml (external-dns creates the Route 53 record for it)
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip                # ALB -> Kong pod IPs directly
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+      alb.ingress.kubernetes.io/ssl-redirect: "443"            # HTTP -> HTTPS
+      alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      alb.ingress.kubernetes.io/backend-protocol: HTTP
+      alb.ingress.kubernetes.io/healthcheck-port: "8100"       # Kong status port
+      alb.ingress.kubernetes.io/healthcheck-path: /status/ready  # 200 only once config is loaded from Konnect
+      alb.ingress.kubernetes.io/success-codes: "200"
+      alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=30
+      # per env (values-<env>.yaml): certificate-arn, wafv2-acl-arn, load-balancer-name,
+      #                              load-balancer-attributes (access logs, deletion protection)
+
+status:
+  enabled: true
+  http:
+    enabled: true
+    containerPort: 8100          # /status/ready (readiness: no traffic until config received) + /metrics
+
+secretVolumes:
+  - kong-cluster-cert
+
+resources:
+  requests: { cpu: 500m, memory: 1Gi }
+  limits:   { memory: 1Gi }
+
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 0            # a new pod must be Ready before an old one stops
+    maxSurge: 1
+
+terminationGracePeriodSeconds: 60

@@ -1,0 +1,76 @@
+# DEV ONLY: PostgreSQL as a pod — one server holding auth_db, products_db, orders_db, users_db.
+# staging/prod use Amazon RDS instead (terraform-infra/modules/rds).
+# Only the backend services may connect (06-network-policy/network-policy.yml).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: boutique-postgres
+  namespace: boutique
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: boutique-postgres
+  namespace: boutique
+  labels:
+    app: postgres
+spec:
+  clusterIP: None              # headless: stable DNS for the StatefulSet pod
+  selector:
+    app: postgres
+  ports:
+    - name: tcp-postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: boutique-postgres
+  namespace: boutique
+spec:
+  serviceName: boutique-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      serviceAccountName: boutique-postgres
+      containers:
+        - name: postgres
+          image: postgres:18-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: boutique-secrets, key: POSTGRES_PASSWORD }
+            - name: PGDATA                       # Postgres 18 image layout: /var/lib/postgresql/<major>/docker
+              value: /var/lib/postgresql/18/docker
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U postgres"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits:   { cpu: "1",  memory: 1Gi }
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql   # Postgres 18+ mounts the parent folder, not .../data
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: gp3          # created by terraform-infra/modules/addons
+        resources:
+          requests:
+            storage: 10Gi

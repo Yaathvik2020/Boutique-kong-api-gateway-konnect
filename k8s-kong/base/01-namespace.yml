@@ -1,0 +1,12 @@
+# Namespaces.
+#   boutique - the app (access between pods controlled by 06-network-policy/)
+#   kong     - Kong data planes (installed by Argo CD from k8s-kong/kong-dp, see argocd/<env>/)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: boutique
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kong

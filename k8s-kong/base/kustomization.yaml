@@ -1,0 +1,33 @@
+# BASE: everything every environment has. Don't deploy this folder directly:
+# deploy overlays/<env> (it sets images, secret names, replicas, HA).
+# Not included:
+#   ../kong-dp      Kong data planes (Helm, deployed by argocd/<env>/kong-dp.yaml)
+#   ../../kong-config  routes + plugins, applied to Konnect with decK
+#
+# No global "namespace:" here on purpose: each file sets its own namespace,
+# so the ServiceMonitor stays in "monitoring".
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - 01-namespace.yml
+  - 02-external-secrets.yml
+  - 03-database/restore-job.yml
+  - 04-backend/auth.yml
+  - 04-backend/product-service.yml
+  - 04-backend/orders.yml
+  - 04-backend/user-service.yml
+  - 04-backend/order-service.yml
+  - 05-frontend/frontend.yml
+  - 06-network-policy/network-policy.yml
+  - 08-monitoring/service-monitor.yml
+  - 08-monitoring/kong-podmonitor.yml
+
+configMapGenerator:
+  - name: boutique-db-dump
+    namespace: boutique
+    files:
+      - 03-database/boutique_full.sql
+
+generatorOptions:
+  disableNameSuffixHash: true

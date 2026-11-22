@@ -1,0 +1,124 @@
+# WHO MAY CALL WHOM (replaces Istio's AuthorizationPolicies)
+#
+# Rule 1: deny all incoming traffic to every pod in "boutique".
+# Then:   one ALLOW per arrow below.
+#
+#   Kong data planes (namespace kong) ─► frontend, auth, product-service, orders, user-service
+#   orders ────────► product-service
+#   order-service ─► product-service
+#   all backends ──► postgres   (+ the restore Job)
+#   Prometheus ────► backend ports (to scrape /metrics)
+#
+# Anything else is dropped (the connection times out).
+# Example: user-service can NOT call orders; a pod in another namespace can NOT reach the DB.
+#
+# Differences from Istio:
+#   - NetworkPolicy works on IP + port (layer 4). It can't check URL paths, so
+#     "Prometheus may only call GET /metrics" becomes "monitoring may reach the port".
+#   - No automatic encryption between pods (Istio's mTLS). Traffic inside the VPC is
+#     plain HTTP. Add app-level TLS if your compliance rules require encryption in transit.
+#
+# REQUIREMENT: the cluster must ENFORCE NetworkPolicies. On EKS that means the
+# vpc-cni add-on with enableNetworkPolicy=true (projects/Infrastructure/modules/eks).
+# Without it these objects are accepted but do nothing.
+---
+# 1. Default: no incoming traffic to any pod in boutique
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-ingress
+  namespace: boutique
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+---
+# 2. Kong -> the public services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-kong
+  namespace: boutique
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [frontend, auth, product-service, orders, user-service]
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kong
+      ports:
+        - { port: 3000, protocol: TCP }   # frontend
+        - { port: 3002, protocol: TCP }   # auth
+        - { port: 3003, protocol: TCP }   # product-service
+        - { port: 3005, protocol: TCP }   # orders
+        - { port: 3006, protocol: TCP }   # user-service
+---
+# 3. product-service: also the two order services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: product-service-from-order-services
+  namespace: boutique
+spec:
+  podSelector:
+    matchLabels: { app: product-service }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: [orders, order-service]
+      ports:
+        - { port: 3003, protocol: TCP }
+---
+# 4. Postgres: only the backends and the restore Job
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-from-backends
+  namespace: boutique
+spec:
+  podSelector:
+    matchLabels: { app: postgres }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: [auth, product-service, orders, order-service, user-service, boutique-db-restore]
+      ports:
+        - { port: 5432, protocol: TCP }
+---
+# 5. Prometheus (namespace monitoring) may scrape the backends
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape
+  namespace: boutique
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [auth, product-service, order-service, orders, user-service]
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - { port: 3002, protocol: TCP }
+        - { port: 3003, protocol: TCP }
+        - { port: 3004, protocol: TCP }
+        - { port: 3005, protocol: TCP }
+        - { port: 3006, protocol: TCP }
+# order-service has no rule except Prometheus: nothing may call it today (same as before).

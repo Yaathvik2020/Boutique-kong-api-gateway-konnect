@@ -1,0 +1,21 @@
+# Prometheus scrapes /metrics from every backend service.
+# (Kong's own metrics are scraped via the ServiceMonitor the Kong Helm chart creates.)
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: boutique-services
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack      # your Prometheus picks up monitors with this label
+spec:
+  namespaceSelector:
+    matchNames: ["boutique"]
+  selector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [auth, product-service, order-service, orders, user-service]
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
