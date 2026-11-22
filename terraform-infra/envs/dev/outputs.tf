@@ -67,3 +67,17 @@ output "vpc_cidr" {
   description = "Kong trusted_ips (the ALB's X-Forwarded-For is trusted from inside the VPC)"
   value       = module.vpc.vpc_cidr
 }
+
+output "oidc_issuer" {
+  description = "kong-config/envs/<env>.env DECK_OIDC_ISSUER"
+  value       = module.partner_auth.issuer
+}
+
+output "partner_acme_client_id" {
+  description = "kong-config/envs/<env>.env DECK_PARTNER_ACME_CLIENT_ID"
+  value       = module.partner_auth.client_ids["acme"]
+}
+
+output "partner_token_url" {
+  value = module.partner_auth.token_url
+}

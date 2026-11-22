@@ -115,3 +115,13 @@ module "addons" {
 
   depends_on = [module.eks] # nodes + EBS driver must exist before Helm installs
 }
+
+# Partner login (OAuth2 client credentials): Cognito issues tokens, Kong verifies them
+module "partner_auth" {
+  source               = "../../modules/partner-auth"
+  name                 = local.name
+  region               = var.region
+  secrets_prefix       = local.secrets_prefix
+  deletion_protection  = var.deletion_protection
+  recovery_window_days = var.deletion_protection ? 7 : 0
+}
