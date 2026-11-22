@@ -36,17 +36,30 @@ set -a
 # shellcheck source=/dev/null
 source "$ENV_FILE"
 set +a
-# Partner API keys (key-auth) from Secrets Manager: boutique/<env>/partner-api-keys = {"acme": "<key>"}
-if [[ "$ACTION" != "ping" && -z "${DECK_PARTNER_ACME_KEY:-}" ]]; then
+# Partner API keys (key-auth) from Secrets Manager: boutique/<env>/partner-api-keys =
+# {"acme": "<key>", "globex": "<key>"} -> DECK_PARTNER_ACME_KEY, DECK_PARTNER_GLOBEX_KEY, ...
+# Add a key: scripts/partner-key.sh <env> <name>
+if [[ "$ACTION" != "ping" ]]; then
   KEYS_SECRET="boutique/$CP/partner-api-keys"
   if ! KEYS_JSON="$(aws secretsmanager get-secret-value --region "${AWS_REGION:-us-east-1}" \
         --secret-id "$KEYS_SECRET" --query SecretString --output text 2>/dev/null)"; then
     echo "Partner API keys not found in Secrets Manager ($KEYS_SECRET). Create them with:" >&2
-    echo "  aws secretsmanager create-secret --name $KEYS_SECRET --secret-string \"{\\\"acme\\\": \\\"\$(openssl rand -hex 24)\\\"}\"" >&2
+    echo "  scripts/partner-key.sh $CP acme && scripts/partner-key.sh $CP globex" >&2
     exit 1
   fi
-  DECK_PARTNER_ACME_KEY="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["acme"])' <<<"$KEYS_JSON")"
-  export DECK_PARTNER_ACME_KEY
+  while IFS='=' read -r name value; do
+    var="DECK_PARTNER_${name}_KEY"
+    [[ -n "${!var:-}" ]] || export "$var=$value"     # a value already set (e.g. CI) wins
+  done < <(python3 -c 'import json,sys,re
+for k,v in json.load(sys.stdin).items(): print(re.sub(r"[^A-Z0-9]","_",k.upper())+"="+v)' <<<"$KEYS_JSON")
+  # every DECK_PARTNER_<NAME>_KEY used in boutique.yaml must have a key in the secret
+  while read -r var; do
+    if [[ -z "${!var:-}" ]]; then
+      name="${var#DECK_PARTNER_}"; name="${name%_KEY}"
+      echo "No key for partner '${name,,}' in $KEYS_SECRET. Add it with: scripts/partner-key.sh $CP ${name,,}" >&2
+      exit 1
+    fi
+  done < <(grep -oE 'DECK_PARTNER_[A-Z0-9]+_KEY\b' "$DIR/boutique.yaml" | sort -u)
 fi
 
 # Partner ACME's JWT public key (PEM) from Secrets Manager: boutique/<env>/partner-acme-jwt-public-key.

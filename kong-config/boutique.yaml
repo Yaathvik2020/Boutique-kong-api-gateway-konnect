@@ -213,7 +213,7 @@ services:
               hide_credentials: true   # the backend never sees the key
           - name: acl
             config:
-              allow: [partners]        # only consumers in the "partners" group
+              allow: [partners]        # every partner, Free and Gold (ACL group "partners")
               hide_groups_header: true
           - name: rate-limiting-advanced
             config:
@@ -270,7 +270,8 @@ services:
                 password: '{vault://aws-sm/${{ env "DECK_REDIS_SECRET" }}/password}'
           - name: acl
             config:
-              allow: [partners]
+              allow: [partner-gold]          # Gold tier only (consumer group, see consumer_groups)
+              include_consumer_groups: true  # let allow/deny name consumer groups
               hide_groups_header: true
           - name: rate-limiting-advanced
             config:
@@ -311,7 +312,8 @@ services:
               cookie_names: []
           - name: acl
             config:
-              allow: [partners]
+              allow: [partner-gold]          # Gold tier only (consumer group, see consumer_groups)
+              include_consumer_groups: true  # let allow/deny name consumer groups
               hide_groups_header: true
           - name: rate-limiting-advanced
             config:
@@ -460,13 +462,68 @@ services:
           echo_downstream: true
 
 
+# ---------------------------------------------------------------- partner tiers (plans)
+# Two plans as Kong consumer groups. A consumer-group plugin wins over the route's own
+# rate-limiting-advanced (Kong precedence: consumer group > route > service), so the
+# partner's tier decides its limit; the route limit stays only as a fallback for a partner
+# without a tier. One counter per partner per tier, shared by v1 + v2 + v3.
+#
+#   tier          routes                                          limit per partner
+#   partner-free  /partner/products (API key)                     60/min, 1,000/day
+#   partner-gold  /partner/products, /v2 (OAuth2), /v3 (JWT)       1,000/min, 100,000/day
+#
+# Change a partner's plan: edit "groups" on its consumer below and push.
+consumer_groups:
+  - name: partner-free                # Free plan
+    tags: [partner]
+    plugins:
+      - name: rate-limiting-advanced
+        config:
+          limit: [60, 1000]
+          window_size: [60, 86400]       # per minute and per day
+          window_type: sliding
+          identifier: consumer           # counted per partner ...
+          strategy: redis
+          sync_rate: 0.5
+          namespace: boutique-partner-free   # ... across all partner routes together
+          hide_client_headers: false
+          error_message: "Free plan limit reached (60/min, 1000/day). Upgrade to Gold for more."
+          redis:
+            host: ${{ env "DECK_REDIS_HOST" }}
+            port: 6379
+            ssl: true
+            ssl_verify: true
+            server_name: ${{ env "DECK_REDIS_HOST" }}
+            password: '{vault://aws-sm/${{ env "DECK_REDIS_SECRET" }}/password}'
+  - name: partner-gold                # Gold plan
+    tags: [partner]
+    plugins:
+      - name: rate-limiting-advanced
+        config:
+          limit: [1000, 100000]
+          window_size: [60, 86400]       # per minute and per day
+          window_type: sliding
+          identifier: consumer           # counted per partner ...
+          strategy: redis
+          sync_rate: 0.5
+          namespace: boutique-partner-gold   # ... across all partner routes together
+          hide_client_headers: false
+          error_message: "Gold plan limit reached (1000/min, 100000/day)."
+          redis:
+            host: ${{ env "DECK_REDIS_HOST" }}
+            port: 6379
+            ssl: true
+            ssl_verify: true
+            server_name: ${{ env "DECK_REDIS_HOST" }}
+            password: '{vault://aws-sm/${{ env "DECK_REDIS_SECRET" }}/password}'
+
 # ---------------------------------------------------------------- consumers (partners)
-# One consumer per partner. The API key comes from AWS Secrets Manager
-# (boutique/<env>/partner-api-keys, JSON {"acme": "<key>"}); deck.sh reads it into
-# DECK_PARTNER_ACME_KEY. For the OAuth2 route (/partner/v2) the consumer is found by its
-# custom_id = the partner's Cognito app client ID (terraform output partner_acme_client_id,
-# in kong-config/envs/<env>.env). Add a partner: add a consumer here + a key in that secret
-# + an export line in deck.sh + the partner name in terraform module partner_auth.
+# One consumer per partner; "groups" = its plan (consumer_groups above).
+# API keys come from AWS Secrets Manager boutique/<env>/partner-api-keys,
+# JSON {"acme": "<key>", "globex": "<key>"}; deck.sh exports each as DECK_PARTNER_<NAME>_KEY.
+# Add a partner key: scripts/partner-key.sh <env> <name>.
+# OAuth2 route (/partner/v2): the consumer is found by custom_id = the partner's Cognito app
+# client ID (terraform output partner_acme_client_id, in kong-config/envs/<env>.env).
 consumers:
   - username: partner-acme
     custom_id: ${{ env "DECK_PARTNER_ACME_CLIENT_ID" }}   # Cognito app client ID (OAuth2 route); API key route uses keyauth_credentials
@@ -478,5 +535,17 @@ consumers:
         algorithm: RS256
         secret: rs256-not-used          # decK requires the field; RS256 verifies with the public key only
         rsa_public_key: "${{ env "DECK_PARTNER_ACME_JWT_PUBLIC_KEY" }}"   # from Secrets Manager via deck.sh
+    groups:
+      - name: partner-gold              # Gold plan: all partner routes, 1000/min
+    acls:
+      - group: partners
+
+  # Free-plan partner: API key only (/partner/products), 60/min. No OAuth2 client, no JWT key.
+  - username: partner-globex
+    tags: [partner]
+    keyauth_credentials:
+      - key: ${{ env "DECK_PARTNER_GLOBEX_KEY" }}
+    groups:
+      - name: partner-free
     acls:
       - group: partners
