@@ -15,8 +15,8 @@ waf_allowed_country_codes = []
 
 # EKS
 kubernetes_version          = "1.37"
-cluster_public_access_cidrs = ["0.0.0.0/0"] # TODO: your office/VPN IP, e.g. ["49.36.12.34/32"]
-cluster_admin_role_arns     = ["arn:aws:iam::214920156606:user/Sudhan-ksys"]            # e.g. ["arn:aws:iam::214920156606:role/boutique-github-deploy"]
+cluster_public_access_cidrs = ["0.0.0.0/0"]                                  # TODO: your office/VPN IP, e.g. ["49.36.12.34/32"]
+cluster_admin_role_arns     = ["arn:aws:iam::214920156606:user/Sudhan-ksys"] # e.g. ["arn:aws:iam::214920156606:role/boutique-github-deploy"]
 
 node_instance_types = ["t3.large", "t3a.large", "m5.large"] # several types = fewer Spot interruptions
 node_capacity_type  = "SPOT"                                # ~70% cheaper; nodes can be reclaimed (fine for dev)
