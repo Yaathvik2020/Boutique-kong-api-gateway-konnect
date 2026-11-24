@@ -34,6 +34,13 @@ spec:
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef: { name: boutique-secrets, key: AUTH_DB_URL }
+            # Signs login tokens; user-service verifies them with the same secret
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef: { name: boutique-secrets, key: JWT_SECRET }
+            - name: JWT_REFRESH_SECRET
+              valueFrom:
+                secretKeyRef: { name: boutique-secrets, key: JWT_REFRESH_SECRET }
           readinessProbe:
             httpGet: { path: /health, port: 3002 }
             initialDelaySeconds: 5

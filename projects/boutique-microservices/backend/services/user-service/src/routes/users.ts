@@ -5,7 +5,22 @@ import { query } from '../database/connection';
 import { UserProfile, Address, ServiceResponse } from '../types';
 
 const router = express.Router();
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
+// Same secret as the auth service (Kubernetes Secret boutique-secrets, key JWT_SECRET).
+// No default: a guessable fallback would let anyone sign tokens.
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET || JWT_SECRET.length < 32) {
+  throw new Error('JWT_SECRET must be set (at least 32 characters)');
+}
+
+// Accept only ACCESS tokens issued by the auth service (not refresh tokens).
+const verifyAccess = (token: string): { userId: string } | null => {
+  try {
+    const claims = jwt.verify(token, JWT_SECRET, { issuer: 'boutique-auth', algorithms: ['HS256'] }) as any;
+    return claims && claims.typ === 'access' && claims.userId ? claims : null;
+  } catch {
+    return null;
+  }
+};
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'your-refresh-secret';
 
 router.get('/profile', async (req, res) => {
@@ -16,7 +31,10 @@ router.get('/profile', async (req, res) => {
       return res.status(401).json({ success: false, error: 'No token provided' });
     }
 
-    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    const decoded = verifyAccess(token);
+    if (!decoded) {
+      return res.status(401).json({ success: false, error: 'Invalid or expired token' });
+    }
     
     const result = await query('SELECT id, email, first_name, last_name, role, created_at, updated_at FROM users WHERE id = $1', [decoded.userId]);
     
@@ -64,7 +82,10 @@ router.put('/profile', async (req, res) => {
       return res.status(401).json({ success: false, error: 'No token provided' });
     }
 
-    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    const decoded = verifyAccess(token);
+    if (!decoded) {
+      return res.status(401).json({ success: false, error: 'Invalid or expired token' });
+    }
     const { firstName, lastName } = req.body;
 
     await query(
@@ -110,7 +131,10 @@ router.post('/addresses', async (req, res) => {
       return res.status(401).json({ success: false, error: 'No token provided' });
     }
 
-    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    const decoded = verifyAccess(token);
+    if (!decoded) {
+      return res.status(401).json({ success: false, error: 'Invalid or expired token' });
+    }
     const { street, city, state, zipCode, country, isDefault } = req.body;
 
     const result = await query(
