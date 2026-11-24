@@ -11,22 +11,22 @@ components:
 images:   # updated by CI (dev) and by the promote workflow (staging, prod). Same tag = same image.
   - name: boutique/frontend
     newName: 214920156606.dkr.ecr.us-east-1.amazonaws.com/boutique/frontend
-    newTag: "45f3059bee8ed00c98208a6f3c73af6ec380bce4"
+    newTag: "5e9a0434285d4ccc5349c9ba4f6029b458a89f5f"
   - name: boutique/auth
     newName: 214920156606.dkr.ecr.us-east-1.amazonaws.com/boutique/auth
-    newTag: "45f3059bee8ed00c98208a6f3c73af6ec380bce4"
+    newTag: "5e9a0434285d4ccc5349c9ba4f6029b458a89f5f"
   - name: boutique/orders
     newName: 214920156606.dkr.ecr.us-east-1.amazonaws.com/boutique/orders
-    newTag: "45f3059bee8ed00c98208a6f3c73af6ec380bce4"
+    newTag: "5e9a0434285d4ccc5349c9ba4f6029b458a89f5f"
   - name: boutique/order-service
     newName: 214920156606.dkr.ecr.us-east-1.amazonaws.com/boutique/order-service
-    newTag: "45f3059bee8ed00c98208a6f3c73af6ec380bce4"
+    newTag: "5e9a0434285d4ccc5349c9ba4f6029b458a89f5f"
   - name: boutique/product-service
     newName: 214920156606.dkr.ecr.us-east-1.amazonaws.com/boutique/product-service
-    newTag: "45f3059bee8ed00c98208a6f3c73af6ec380bce4"
+    newTag: "5e9a0434285d4ccc5349c9ba4f6029b458a89f5f"
   - name: boutique/user-service
     newName: 214920156606.dkr.ecr.us-east-1.amazonaws.com/boutique/user-service
-    newTag: "45f3059bee8ed00c98208a6f3c73af6ec380bce4"
+    newTag: "5e9a0434285d4ccc5349c9ba4f6029b458a89f5f"
 
 patches:
   # Secrets Manager names for this environment (created by terraform-infra/envs/dev)
