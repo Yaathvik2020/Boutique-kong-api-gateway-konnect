@@ -122,6 +122,7 @@ module "partner_auth" {
   name                 = local.name
   region               = var.region
   secrets_prefix       = local.secrets_prefix
+  partners             = ["acme", "initech"] # ← ADD
   deletion_protection  = var.deletion_protection
   recovery_window_days = var.deletion_protection ? 7 : 0
 }

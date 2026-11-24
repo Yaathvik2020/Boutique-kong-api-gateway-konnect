@@ -77,6 +77,9 @@ output "partner_acme_client_id" {
   description = "kong-config/envs/<env>.env DECK_PARTNER_ACME_CLIENT_ID"
   value       = module.partner_auth.client_ids["acme"]
 }
+output "partner_initech_client_id" {
+  value = module.partner_auth.client_ids["initech"]
+}
 
 output "partner_token_url" {
   value = module.partner_auth.token_url
