@@ -549,3 +549,12 @@ consumers:
       - name: partner-free
     acls:
       - group: partners
+
+  # OAuth2 partner (Gold plan)
+  - username: partner-initech
+    custom_id: ${{ env "DECK_PARTNER_INITECH_CLIENT_ID" }}
+    tags: [partner]
+    groups:
+      - name: partner-gold
+    acls:
+      - group: partners
